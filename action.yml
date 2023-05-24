@@ -20,4 +20,4 @@ runs:
       shell: bash
       env:
         CT_TOKEN: ${{ inputs.ctToken }}
-        GH_TOKEN: ${{ inputs.ghToken }}
+        GITHUB_TOKEN: ${{ inputs.ghToken }}
