@@ -1,0 +1,9 @@
+name: 'ct'
+description: 'ct'
+runs:
+  using: "composite"
+  steps:
+    - run: npm install @cloudticon/cli@0.2.0
+      shell: bash
+    - run: ct deploy
+      shell: bash
