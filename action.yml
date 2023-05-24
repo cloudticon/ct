@@ -16,6 +16,8 @@ runs:
   steps:
     - run: npm install @cloudticon/cli@${{ inputs.version }} -g
       shell: bash
+    - run: npm install @cloudticon/cdk
+      shell: bash
     - run: ct deploy
       shell: bash
       env:
