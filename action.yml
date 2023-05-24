@@ -14,7 +14,10 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - run: npm install @cloudticon/cli@0.2.0
+    - run: npm install @cloudticon/cli@0.2.0 -g
       shell: bash
     - run: ct deploy
       shell: bash
+      env:
+        CT_TOKEN: ${{ inputs.ctToken }}
+        GH_TOKEN: ${{ inputs.ghToken }}
