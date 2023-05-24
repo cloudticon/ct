@@ -4,6 +4,10 @@ inputs:
   ctToken:
     description: 'ct token'
     required: true
+  version:
+    description: 'ct token'
+    required: true
+    default: "0.2.1"
   ghToken:
     description: 'github token'
     required: true
@@ -14,7 +18,7 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - run: npm install @cloudticon/cli@0.2.0 -g
+    - run: npm install @cloudticon/cli@${{ inputs.version }} -g
       shell: bash
     - run: ct deploy
       shell: bash
