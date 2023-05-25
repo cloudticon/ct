@@ -16,7 +16,7 @@ runs:
   steps:
     - run: npm install @cloudticon/cli@${{ inputs.version }} -g
       shell: bash
-    - run: npm install @cloudticon/cdk
+    - run: npm install @cloudticon/cdk@$(node -pe "require('./package').dependencies['@cloudticon/cdk']")
       shell: bash
     - run: ct deploy
       shell: bash
