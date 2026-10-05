@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,13 +65,23 @@ func TestStreamPodLogs_UsesDefaultContainer(t *testing.T) {
 	}))
 	c := newClientFromInterfaces(clientset.CoreV1(), clientset.Discovery(), nil, "dev-ns")
 
-	stream, err := streamPodLogs(context.Background(), c, "web-1")
+	stream, err := streamPodLogs(context.Background(), c, "web-1", nil)
 	require.NoError(t, err)
 	_ = stream.Close()
 
 	opts := lastLogOptions(t, clientset)
 	assert.Equal(t, "app", opts.Container)
 	assert.True(t, opts.Follow)
+	assert.True(t, opts.Timestamps, "timestamps are needed to resume without replaying")
+	assert.Nil(t, opts.SinceTime)
+
+	since := time.Date(2026, 10, 5, 10, 0, 2, 0, time.UTC)
+	stream, err = streamPodLogs(context.Background(), c, "web-1", &since)
+	require.NoError(t, err)
+	_ = stream.Close()
+	opts = lastLogOptions(t, clientset)
+	require.NotNil(t, opts.SinceTime)
+	assert.True(t, opts.SinceTime.Time.Equal(since))
 }
 
 func lastLogOptions(t *testing.T, clientset *fake.Clientset) *corev1.PodLogOptions {
