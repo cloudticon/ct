@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
@@ -68,6 +70,12 @@ func runList(cmd *cobra.Command, opts listOpts) error {
 }
 
 func writeReleaseTable(w io.Writer, releases []k8s.ReleaseInfo) error {
+	// Colors only for a terminal; pipes, files and agents get plain text.
+	if isColorTerminal(w) {
+		pterm.EnableStyling()
+	} else {
+		pterm.DisableStyling()
+	}
 	data := [][]string{{"NAME", "NAMESPACE", "RESOURCES"}}
 	for _, r := range releases {
 		data = append(data, []string{r.Name, r.Namespace, fmt.Sprintf("%d", r.Resources)})
@@ -104,4 +112,9 @@ func writeReleaseYAML(w io.Writer, releases []k8s.ReleaseInfo) error {
 		return err
 	}
 	return nil
+}
+
+func isColorTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && os.Getenv("NO_COLOR") == "" && term.IsTerminal(int(f.Fd()))
 }

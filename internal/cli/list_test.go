@@ -91,9 +91,22 @@ func TestRunList_TableOutput(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, stdout.String(), "NAME")
+	assert.NotContains(t, stdout.String(), "\x1b[", "no ANSI colors when not writing to a terminal")
 	assert.Contains(t, stdout.String(), "api")
 	// Listing scoped to "prod" namespace excludes "staging".
 	assert.NotContains(t, stdout.String(), "backend")
+}
+
+func TestRunList_ExplicitTableFormat(t *testing.T) {
+	fake := withFakeCluster(t)
+	seedRelease(t, fake, "prod", "api", 3)
+
+	stdout := new(bytes.Buffer)
+	cmd := &cobra.Command{}
+	cmd.SetOut(stdout)
+
+	require.NoError(t, runList(cmd, listOpts{namespace: "prod", outputFmt: "table"}))
+	assert.Contains(t, stdout.String(), "api")
 }
 
 func TestRunList_JSONOutput(t *testing.T) {

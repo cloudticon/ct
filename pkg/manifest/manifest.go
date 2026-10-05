@@ -265,6 +265,13 @@ var installRank = func() map[string]int {
 	return rank
 }()
 
+// InstallRank is a kind's position in Helm's install order; false for kinds
+// Helm doesn't know (custom resources).
+func InstallRank(kind string) (int, bool) {
+	rank, ok := installRank[kind]
+	return rank, ok
+}
+
 // SortForApply orders resources the way Helm installs them. Kinds Helm
 // doesn't know (custom resources) go last, alphabetically by kind. Objects of
 // the same kind keep their registration order.
