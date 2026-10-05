@@ -1177,3 +1177,27 @@ func (b *syncBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// Log streams of several targets write to the same RunOpts.Stdout from
+// different goroutines; any io.Writer must be safe to pass.
+func TestStartDevFeatures_LogStreamsShareStdoutSafely(t *testing.T) {
+	silenceDevLog(t)
+
+	fake := k8stest.NewFake()
+	for _, name := range []string{"api", "web"} {
+		fake.AddPod(&k8stest.FakePod{
+			Name: name + "-x", Namespace: "ns", Labels: k8s.Selector{"app": name}, Healthy: true,
+			LogContent: strings.Repeat(name+" log line\n", 200),
+		})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	var out bytes.Buffer
+	require.NoError(t, startDevFeatures(ctx, fake, "ns", []Target{
+		{Name: "api", Selector: map[string]string{"app": "api"}},
+		{Name: "web", Selector: map[string]string{"app": "web"}},
+	}, &out))
+	assert.Equal(t, 200, strings.Count(out.String(), "api log line\n"))
+	assert.Equal(t, 200, strings.Count(out.String(), "web log line\n"))
+}

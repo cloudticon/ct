@@ -103,6 +103,8 @@ func startDevFeatures(ctx context.Context, cluster k8s.Cluster, namespace string
 	}
 
 	hasTerminal := hasTerminalTarget(targets)
+	// Log streams of all targets write to stdout concurrently.
+	stdout = &lockedWriter{w: stdout}
 
 	for attempt := 0; ; attempt++ {
 		sessionStart := time.Now()
@@ -140,6 +142,21 @@ func startDevFeatures(ctx context.Context, cluster k8s.Cluster, namespace string
 			return nil
 		}
 	}
+}
+
+// lockedWriter serializes writes to a writer shared by several goroutines.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.w == nil {
+		return len(p), nil
+	}
+	return l.w.Write(p)
 }
 
 // retryBackoff returns the wait before reconnect attempt+1.
