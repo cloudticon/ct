@@ -1,8 +1,10 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -155,6 +157,9 @@ func (t *Transpiler) urlResolverPlugin() api.Plugin {
 						return api.OnResolveResult{}, nil
 					}
 					_, subPath := packages.SplitPackagePath(args.Path)
+					if slices.Contains(strings.Split(subPath, "/"), "..") {
+						return api.OnResolveResult{}, fmt.Errorf("import %q leaves its package", args.Path)
+					}
 
 					pkgDir, err := resolve(url)
 					if err != nil {

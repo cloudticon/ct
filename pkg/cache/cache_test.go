@@ -220,3 +220,37 @@ func TestInvalidate_ForcesRedownload(t *testing.T) {
 
 	assert.Equal(t, 2, *calls)
 }
+
+func TestParsePackageURL_RejectsPathTraversal(t *testing.T) {
+	for _, url := range []string{
+		"https://github.com/o/r@x/../../../../tmp/victim",
+		"https://github.com/o/r@..",
+		"https://github.com/../r@v1",
+		"https://custom.dev/../../etc@v1",
+		"https://custom.dev/./x@v1",
+		"https://../x/y@v1",
+		"https://github.com/o/r@-upload-pack=evil",
+		"https://github.com/o/r@v1/",
+	} {
+		_, err := cache.ParsePackageURL(url)
+		assert.Error(t, err, url)
+	}
+}
+
+func TestInvalidate_NeverLeavesTheCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	victim := filepath.Join(home, "victim")
+	require.NoError(t, os.MkdirAll(victim, 0o755))
+
+	err := cache.Invalidate("https://github.com/o/r@x/../../../../../victim")
+
+	require.Error(t, err)
+	assert.DirExists(t, victim)
+}
+
+func TestCacheKey_BranchWithSlashIsOneDirectory(t *testing.T) {
+	ref, err := cache.ParsePackageURL("https://github.com/o/r@feature/new-ui")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join("github.com", "o", "r@feature%2Fnew-ui"), ref.CacheKey())
+}

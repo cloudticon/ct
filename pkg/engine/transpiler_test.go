@@ -426,3 +426,17 @@ func TestBundle_RefreshPackagesInvalidatesCacheOncePerBundle(t *testing.T) {
 	require.Error(t, err, "the stale copy is dropped and a re-download is attempted")
 	assert.NoDirExists(t, pkgDir)
 }
+
+func TestBundle_PackageSubPathCannotLeaveThePackage(t *testing.T) {
+	pkgDir := setupFakeCache(t, "github.com", "someone", "pkg", "v1")
+	writeTS(t, pkgDir, "index.ts", `export const ok = 1;`)
+	writeTS(t, filepath.Dir(pkgDir), "secret.ts", `export const secret = "leaked";`)
+
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { secret } from "github.com/someone/pkg@v1/../secret"; console.log(secret);`), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "leaves its package")
+}

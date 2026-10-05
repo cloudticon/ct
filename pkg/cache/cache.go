@@ -30,20 +30,32 @@ func IsWellKnownHost(host string) bool {
 	return false
 }
 
+var (
+	hostRe    = regexp.MustCompile(`^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:[0-9]+)?$`)
+	segmentRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	versionRe = regexp.MustCompile(`^[A-Za-z0-9_.+-]+(/[A-Za-z0-9_.+-]+)*$`)
+)
+
 func ParsePackageURL(rawURL string) (*PackageRef, error) {
 	invalid := fmt.Errorf("invalid package URL: %s (expected https://host/owner/repo[@version])", rawURL)
 	m := packageURLRegex.FindStringSubmatch(rawURL)
-	if m == nil {
+	if m == nil || !hostRe.MatchString(m[1]) {
 		return nil, invalid
 	}
 	segments := strings.Split(m[2], "/")
 	for _, s := range segments {
-		if s == "" {
+		if !segmentRe.MatchString(s) || s == "." || s == ".." {
 			return nil, invalid
 		}
 	}
 	if IsWellKnownHost(m[1]) && len(segments) != 2 {
 		return nil, invalid
+	}
+	// Versions are git refs: they may contain '/' (feature/x) but never '..'
+	// or a leading '-', which would also let them escape the cache directory
+	// or pass for a git option.
+	if v := m[3]; v != "" && (!versionRe.MatchString(v) || strings.Contains(v, "..") || strings.HasPrefix(v, "-")) {
+		return nil, fmt.Errorf("invalid version %q in package URL %s", v, rawURL)
 	}
 	last := len(segments) - 1
 	return &PackageRef{
@@ -59,7 +71,23 @@ func (r *PackageRef) CacheKey() string {
 	if version == "" {
 		version = "_default"
 	}
+	// Keep branch names like feature/x in one directory.
+	version = strings.ReplaceAll(version, "/", "%2F")
 	return filepath.Join(r.Host, r.Owner, r.Repo+"@"+version)
+}
+
+// packageDir is where a package lives in the cache. It refuses paths that
+// would land outside the cache directory.
+func packageDir(ref *PackageRef) (string, error) {
+	cacheBase, err := CacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(cacheBase, ref.CacheKey())
+	if rel, err := filepath.Rel(cacheBase, dir); err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("package %s resolves outside the cache directory", ref.GitURL())
+	}
+	return dir, nil
 }
 
 func (r *PackageRef) GitURL() string {
@@ -82,12 +110,10 @@ func Resolve(rawURL string) (string, error) {
 		return "", err
 	}
 
-	cacheBase, err := CacheDir()
+	pkgDir, err := packageDir(ref)
 	if err != nil {
 		return "", err
 	}
-
-	pkgDir := filepath.Join(cacheBase, ref.CacheKey())
 
 	if dirHasFiles(pkgDir) {
 		return pkgDir, nil
@@ -107,12 +133,11 @@ func Invalidate(rawURL string) error {
 		return err
 	}
 
-	cacheBase, err := CacheDir()
+	pkgDir, err := packageDir(ref)
 	if err != nil {
 		return err
 	}
-
-	return os.RemoveAll(filepath.Join(cacheBase, ref.CacheKey()))
+	return os.RemoveAll(pkgDir)
 }
 
 // cloneFn fetches a package into an empty directory. Tests replace it.
