@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
+	"time"
 
+	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/fatih/color"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -17,19 +20,54 @@ import (
 
 type Resource = map[string]interface{}
 
+// crdEstablishTimeout bounds how long apply waits for discovery to serve a
+// kind whose CRD was applied earlier in the same run.
+var (
+	crdEstablishTimeout = 30 * time.Second
+	crdPollInterval     = 500 * time.Millisecond
+)
+
+// apply server-side-applies resources in Helm install order (namespaces and
+// CRDs first). Custom resources whose CRD is part of the same release wait
+// until the API server starts serving the new kind.
 func (c *client) apply(ctx context.Context, resources []Resource) error {
-	for _, res := range resources {
-		if err := c.applyOne(ctx, res); err != nil {
+	ordered := slices.Clone(resources)
+	manifest.SortForApply(ordered)
+
+	newKinds := map[string]bool{}
+	for _, res := range ordered {
+		if err := c.applyOne(ctx, res, newKinds); err != nil {
 			return err
+		}
+		if groupKind, ok := crdGroupKind(res); ok {
+			newKinds[groupKind] = true
 		}
 	}
 	return nil
 }
 
-func (c *client) applyOne(ctx context.Context, res Resource) error {
+// crdGroupKind returns "group/Kind" served by a CustomResourceDefinition.
+func crdGroupKind(res Resource) (string, bool) {
+	if res["kind"] != "CustomResourceDefinition" {
+		return "", false
+	}
+	spec, _ := res["spec"].(map[string]interface{})
+	group, _ := spec["group"].(string)
+	names, _ := spec["names"].(map[string]interface{})
+	kind, _ := names["kind"].(string)
+	if group == "" || kind == "" {
+		return "", false
+	}
+	return group + "/" + kind, true
+}
+
+func (c *client) applyOne(ctx context.Context, res Resource, newKinds map[string]bool) error {
 	obj := toUnstructured(res)
 
 	info, err := c.resolveResourceInfo(obj.GetAPIVersion(), obj.GetKind())
+	if err != nil && newKinds[manifest.Group(obj.GetAPIVersion())+"/"+obj.GetKind()] {
+		info, err = c.waitForKind(ctx, obj.GetAPIVersion(), obj.GetKind())
+	}
 	if err != nil {
 		return fmt.Errorf("resolving resource info for %s %s: %w", obj.GetAPIVersion(), obj.GetKind(), err)
 	}
@@ -61,6 +99,23 @@ func (c *client) applyOne(ctx context.Context, res Resource) error {
 
 	log.Printf("%s %s/%s", color.GreenString("applied"), obj.GetKind(), obj.GetName())
 	return nil
+}
+
+// waitForKind polls discovery until a freshly created CRD's kind is served.
+func (c *client) waitForKind(ctx context.Context, apiVersion, kind string) (*resourceInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, crdEstablishTimeout)
+	defer cancel()
+	for {
+		info, err := c.resolveResourceInfo(apiVersion, kind)
+		if err == nil {
+			return info, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("waiting for CRD to serve %s %s: %w", apiVersion, kind, err)
+		case <-time.After(crdPollInterval):
+		}
+	}
 }
 
 func toUnstructured(res Resource) *unstructured.Unstructured {

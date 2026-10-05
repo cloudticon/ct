@@ -2,7 +2,9 @@ package engine
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/dop251/goja"
 )
 
@@ -29,8 +31,27 @@ func Execute(opts ExecuteOpts) ([]Resource, error) {
 		return nil, fmt.Errorf("failed to extract resources: %w", err)
 	}
 
-	postProcess(resources, opts.Namespace)
+	manifest.Normalize(resources, opts.Namespace)
+	if err := checkDuplicates(resources); err != nil {
+		return nil, err
+	}
 	return resources, nil
+}
+
+func checkDuplicates(resources []Resource) error {
+	dups := manifest.FindDuplicates(resources)
+	if len(dups) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(dups))
+	for i, d := range dups {
+		positions := make([]string, len(d.Indexes))
+		for j, idx := range d.Indexes {
+			positions[j] = fmt.Sprintf("#%d", idx+1)
+		}
+		msgs[i] = fmt.Sprintf("%s is registered %d times (resources %s)", d.Ref, len(d.Indexes), strings.Join(positions, ", "))
+	}
+	return fmt.Errorf("duplicate resources: %s", strings.Join(msgs, "; "))
 }
 
 func injectGlobals(vm *goja.Runtime, values map[string]interface{}, releaseName, namespace string) {
@@ -68,64 +89,4 @@ func extractResources(vm *goja.Runtime) ([]Resource, error) {
 	}
 
 	return resources, nil
-}
-
-func postProcess(resources []Resource, namespace string) {
-	for _, res := range resources {
-		scope, _ := res["__ctts_scope"].(string)
-		delete(res, "__ctts_scope")
-
-		if scope != "cluster" && namespace != "" {
-			applyNamespaceDefault(res, namespace)
-		}
-
-		cleanNilFields(res)
-	}
-}
-
-func applyNamespaceDefault(res Resource, namespace string) {
-	meta, ok := res["metadata"].(map[string]interface{})
-	if !ok {
-		return
-	}
-	if ns, exists := meta["namespace"]; !exists || ns == nil || ns == "" {
-		meta["namespace"] = namespace
-	}
-}
-
-func cleanNilFields(obj map[string]interface{}) {
-	for k, v := range obj {
-		if v == nil {
-			delete(obj, k)
-			continue
-		}
-		switch val := v.(type) {
-		case map[string]interface{}:
-			cleanNilFields(val)
-			if len(val) == 0 {
-				delete(obj, k)
-			}
-		case []interface{}:
-			cleaned := cleanNilSlice(val)
-			if len(cleaned) == 0 {
-				delete(obj, k)
-			} else {
-				obj[k] = cleaned
-			}
-		}
-	}
-}
-
-func cleanNilSlice(arr []interface{}) []interface{} {
-	result := make([]interface{}, 0, len(arr))
-	for _, item := range arr {
-		if item == nil {
-			continue
-		}
-		if m, ok := item.(map[string]interface{}); ok {
-			cleanNilFields(m)
-		}
-		result = append(result, item)
-	}
-	return result
 }

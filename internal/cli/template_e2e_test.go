@@ -185,14 +185,14 @@ __ct_resources.push({
 	docs := splitYAMLDocs(t, stdout)
 	require.Len(t, docs, 2)
 
-	cm := asMap(t, docs[0]["metadata"])
+	cm := asMap(t, docByKind(t, docs, "ConfigMap")["metadata"])
 	assert.Equal(t, "default-ns", cm["namespace"], "namespaced resource without explicit ns must inherit default")
 
-	secret := asMap(t, docs[1]["metadata"])
+	secret := asMap(t, docByKind(t, docs, "Secret")["metadata"])
 	assert.Equal(t, "explicit-ns", secret["namespace"], "explicit namespace must not be overridden")
 }
 
-func TestTemplateE2E_RendersMultipleResourcesInRegistrationOrder(t *testing.T) {
+func TestTemplateE2E_RendersResourcesInHelmInstallOrder(t *testing.T) {
 	dir := writeProject(t, `
 __ct_resources.push({
   apiVersion: "apps/v1",
@@ -209,16 +209,93 @@ __ct_resources.push({
   kind: "ConfigMap",
   metadata: { name: "web-cm" },
 });
+__ct_resources.push({
+  apiVersion: "v1",
+  kind: "Namespace",
+  metadata: { name: "team" },
+});
 `, nil)
 
 	stdout, _, err := runTemplateE2E(t, "demo", dir)
 	require.NoError(t, err)
 
 	docs := splitYAMLDocs(t, stdout)
+	require.Len(t, docs, 4)
+	assert.Equal(t, "Namespace", docs[0]["kind"])
+	assert.Equal(t, "ConfigMap", docs[1]["kind"])
+	assert.Equal(t, "Service", docs[2]["kind"])
+	assert.Equal(t, "Deployment", docs[3]["kind"])
+}
+
+func TestTemplateE2E_KeepsEmptyObjects(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({
+  apiVersion: "v1",
+  kind: "Pod",
+  metadata: { name: "p", labels: undefined },
+  spec: {
+    containers: [{ name: "app", image: "nginx", args: [] }],
+    volumes: [{ name: "tmp", emptyDir: {} }],
+  },
+});
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir)
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "emptyDir: {}")
+	assert.NotContains(t, stdout, "args")
+}
+
+func TestTemplateE2E_ClusterScopedKindsGetNoNamespace(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({ apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: { name: "reader" } });
+__ct_resources.push({ apiVersion: "v1", kind: "Namespace", metadata: { name: "team" } });
+__ct_resources.push({ apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "sa" } });
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "-n", "prod")
+	require.NoError(t, err)
+
+	docs := splitYAMLDocs(t, stdout)
 	require.Len(t, docs, 3)
-	assert.Equal(t, "Deployment", docs[0]["kind"])
-	assert.Equal(t, "Service", docs[1]["kind"])
-	assert.Equal(t, "ConfigMap", docs[2]["kind"])
+	for _, doc := range docs {
+		meta := asMap(t, doc["metadata"])
+		if doc["kind"] == "ServiceAccount" {
+			assert.Equal(t, "prod", meta["namespace"])
+		} else {
+			assert.NotContains(t, meta, "namespace", "%s is cluster-scoped", doc["kind"])
+		}
+	}
+}
+
+func TestTemplateE2E_RejectsDuplicateResources(t *testing.T) {
+	dir := writeProject(t, `
+for (const i of [1, 2]) {
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" } });
+}
+`, nil)
+
+	_, _, err := runTemplateE2E(t, "demo", dir, "-n", "prod")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `ConfigMap "cfg" (namespace "prod") is registered 2 times`)
+}
+
+func TestTemplateE2E_YAMLUsesTwoSpaceIndent(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({
+  apiVersion: "v1",
+  kind: "Service",
+  metadata: { name: "svc" },
+  spec: { ports: [{ port: 80, targetPort: 8080 }] },
+});
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir)
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "\nmetadata:\n  labels:\n")
+	assert.Contains(t, stdout, "\nspec:\n  ports:\n    - port: 80\n      targetPort: 8080\n")
 }
 
 func TestTemplateE2E_PreservesUserLabelsOverInjected(t *testing.T) {
@@ -312,6 +389,17 @@ func splitYAMLDocs(t *testing.T, raw string) []map[string]interface{} {
 		}
 	}
 	return docs
+}
+
+func docByKind(t *testing.T, docs []map[string]interface{}, kind string) map[string]interface{} {
+	t.Helper()
+	for _, doc := range docs {
+		if doc["kind"] == kind {
+			return doc
+		}
+	}
+	require.Failf(t, "kind not rendered", "no %s in output", kind)
+	return nil
 }
 
 func asMap(t *testing.T, v interface{}) map[string]interface{} {

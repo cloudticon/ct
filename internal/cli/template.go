@@ -8,6 +8,7 @@ import (
 	"github.com/cloudticon/ct/internal/output"
 	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/cloudticon/ct/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/spf13/cobra"
 )
 
@@ -87,12 +88,17 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 		return nil, fmt.Errorf("bundle failed: %w", err)
 	}
 
-	return engine.Execute(engine.ExecuteOpts{
+	resources, err := engine.Execute(engine.ExecuteOpts{
 		JSCode:      jsCode,
 		Values:      values,
 		Namespace:   opts.namespace,
 		ReleaseName: opts.releaseName,
 	})
+	if err != nil {
+		return nil, err
+	}
+	manifest.SortForApply(resources)
+	return resources, nil
 }
 
 func resolveValuesPath(dir, explicit string) string {
