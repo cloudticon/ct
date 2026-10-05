@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/cloudticon/ct/pkg/k8s/k8stest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/klog/v2"
 )
 
 // devCluster wraps a k8stest.Fake with optional per-method hooks tailored to
@@ -1094,4 +1096,84 @@ dev("web", { sync: [{ from: "./package.json", to: "/app/package.json" }] })
 	assert.Contains(t, err.Error(), `target "web": sync[0].from`)
 	assert.Contains(t, err.Error(), "not a directory")
 	assert.Empty(t, fake.ApplyCalls, "nothing should be applied for an invalid dev.ct")
+}
+
+// runDevSession used to swap the global os.Stderr for /dev/null while the
+// features were already running. client-go reports port-forward errors via
+// klog, which writes to os.Stderr from those goroutines: a data race (and the
+// /dev/null file was closed under late writers).
+func TestRunDevSession_TerminalModeDoesNotRaceOnStderr(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	dc.PortForwardFn = func(ctx context.Context, _ string, _ k8s.Selector, _ []k8s.PortRule) error {
+		for ctx.Err() == nil {
+			fmt.Fprint(os.Stderr, "") // what klog's stderr output does on every log line
+			time.Sleep(time.Millisecond)
+		}
+		return ctx.Err()
+	}
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		time.Sleep(20 * time.Millisecond)
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns", []Target{{
+		Name: "web", Selector: map[string]string{"app": "web"},
+		Ports:    []PortRule{{Local: 8080, Remote: 80}},
+		Terminal: "bash",
+	}}, &bytes.Buffer{}))
+}
+
+// Library logging (klog from client-go, the standard logger) must not draw
+// over the interactive terminal, and must work again afterwards.
+func TestRunDevSession_SilencesLibraryLogsOnlyDuringTerminal(t *testing.T) {
+	silenceDevLog(t)
+	var stdLog bytes.Buffer
+	origLog := log.Writer()
+	log.SetOutput(&stdLog)
+	t.Cleanup(func() { log.SetOutput(origLog) })
+
+	klogOut := &syncBuffer{}
+	klog.LogToStderr(false)
+	klog.SetOutput(klogOut)
+	t.Cleanup(func() {
+		klog.SetOutput(io.Discard)
+		klog.LogToStderr(true)
+	})
+
+	dc := newDevCluster()
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		log.Print("std-during-terminal")
+		klog.Info("klog-during-terminal")
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+
+	log.Print("std-after")
+	klog.Info("klog-after")
+	klog.Flush()
+	assert.NotContains(t, stdLog.String(), "during-terminal")
+	assert.Contains(t, stdLog.String(), "std-after")
+	assert.NotContains(t, klogOut.String(), "during-terminal")
+	assert.Contains(t, klogOut.String(), "klog-after")
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

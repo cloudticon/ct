@@ -17,6 +17,7 @@ import (
 	"github.com/cloudticon/ct/pkg/k8s"
 	ctsync "github.com/cloudticon/ct/pkg/sync"
 	"github.com/fatih/color"
+	"github.com/go-logr/logr"
 	"github.com/pterm/pterm"
 	"k8s.io/klog/v2"
 )
@@ -295,26 +296,7 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 	}
 
 	if hasTerminal {
-		origLogWriter := log.Writer()
-		origStderr := os.Stderr
-
-		log.SetOutput(io.Discard)
-		klog.SetOutput(io.Discard)
-
-		var devNullFile *os.File
-		if f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
-			os.Stderr = f
-			devNullFile = f
-		}
-
-		defer func() {
-			if devNullFile != nil {
-				os.Stderr = origStderr
-				devNullFile.Close()
-			}
-			klog.SetOutput(origStderr)
-			log.SetOutput(origLogWriter)
-		}()
+		defer silenceLibraryLogs()()
 	}
 
 	for _, target := range targets {
@@ -353,6 +335,21 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 		return nil
 	default:
 		return waitFeatures()
+	}
+}
+
+// silenceLibraryLogs mutes the standard logger and klog (client-go) so they
+// do not draw over the interactive terminal, and returns a function that
+// restores them. It used to swap the global os.Stderr for /dev/null, which
+// raced with feature goroutines already logging through klog and closed the
+// file under late writers; both loggers serialize these changes internally.
+func silenceLibraryLogs() (restore func()) {
+	origLogWriter := log.Writer()
+	log.SetOutput(io.Discard)
+	klog.SetLogger(logr.Discard())
+	return func() {
+		klog.ClearLogger()
+		log.SetOutput(origLogWriter)
 	}
 }
 
