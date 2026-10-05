@@ -3,6 +3,7 @@ package engine_test
 import (
 	"testing"
 
+	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -217,4 +218,20 @@ func TestExecute_NoNamespaceFlag(t *testing.T) {
 	meta := resources[0]["metadata"].(map[string]interface{})
 	_, hasNamespace := meta["namespace"]
 	assert.False(t, hasNamespace, "no namespace flag means no namespace added")
+}
+
+func TestUserChain_PrefersProjectFrames(t *testing.T) {
+	frames := []diag.Frame{
+		{File: "github.com/cloudticon/k8s@master/resource.ts", Line: 1},
+		{File: "/home/me/shared/k8s/resource.ts", Line: 2},
+		{File: "lib/app.ct", Line: 3},
+		{File: "main.ct", Line: 4},
+	}
+	assert.Equal(t, frames[2:], engine.UserChain(frames))
+
+	outsideOnly := []diag.Frame{frames[0], frames[1]}
+	assert.Equal(t, frames[1:2], engine.UserChain(outsideOnly), "outside the project but not a package")
+
+	assert.Equal(t, frames[:1], engine.UserChain(frames[:1]), "packages only: innermost frame")
+	assert.Nil(t, engine.UserChain(nil))
 }

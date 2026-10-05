@@ -3,6 +3,7 @@ package engine
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -153,19 +154,25 @@ func trackRegistrations(vm *goja.Runtime, sourceDir string) *[][]diag.Frame {
 	return origins
 }
 
-// userChain keeps the frames in the user's own files, innermost first. When
-// the whole stack is inside packages it keeps the innermost frame.
+// userChain picks the call chain to blame for a registration, innermost
+// first: frames in the project directory, else any frames outside imported
+// packages, else the innermost frame.
 func userChain(frames []diag.Frame) []diag.Frame {
-	var chain []diag.Frame
-	for _, f := range frames {
-		if !isPackagePath(f.File) {
-			chain = append(chain, f)
+	for _, keep := range []func(string) bool{isProjectPath, func(p string) bool { return !isPackagePath(p) }} {
+		var chain []diag.Frame
+		for _, f := range frames {
+			if keep(f.File) {
+				chain = append(chain, f)
+			}
+		}
+		if len(chain) > 0 {
+			return chain
 		}
 	}
-	if len(chain) == 0 && len(frames) > 0 {
-		chain = frames[:1]
+	if len(frames) > 0 {
+		return frames[:1]
 	}
-	return chain
+	return nil
 }
 
 // sourceFrames converts goja frames (already mapped through the bundle's
@@ -198,6 +205,12 @@ func isPackagePath(p string) bool {
 	return strings.Contains(host, ".") && strings.Contains(p, "@")
 }
 
+// isProjectPath reports whether a display path is inside the project
+// (DisplayPath renders those relative to it).
+func isProjectPath(p string) bool {
+	return p != "" && !filepath.IsAbs(p) && !strings.HasPrefix(p, "..") && !isPackagePath(p)
+}
+
 func runtimeDiagnostics(err error, sourceDir string) error {
 	var interrupted *goja.InterruptedError
 	if errors.As(err, &interrupted) {
@@ -225,16 +238,11 @@ func runtimeDiagnostics(err error, sourceDir string) error {
 	return diag.Errorf(diag.CodeRuntime, "%v", err)
 }
 
-// userFrame is the innermost frame in the user's own files, or the innermost
-// frame when the whole stack is inside packages.
+// userFrame is where an error is best fixed: the innermost frame of the
+// user's call chain.
 func userFrame(frames []diag.Frame) *diag.Frame {
-	for i := range frames {
-		if !isPackagePath(frames[i].File) {
-			return &frames[i]
-		}
-	}
-	if len(frames) > 0 {
-		return &frames[0]
+	if chain := userChain(frames); len(chain) > 0 {
+		return &chain[0]
 	}
 	return nil
 }
