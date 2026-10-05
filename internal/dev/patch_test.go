@@ -344,3 +344,119 @@ func TestPatchResources_AllPatchesCombined(t *testing.T) {
 	envs := c["env"].([]interface{})
 	require.Len(t, envs, 2)
 }
+
+func makeMultiContainerDeployment() engine.Resource {
+	return engine.Resource{
+		"kind":     "Deployment",
+		"metadata": map[string]interface{}{"name": "multi"},
+		"spec": map[string]interface{}{
+			"selector": map[string]interface{}{
+				"matchLabels": map[string]interface{}{"app": "multi"},
+			},
+			"template": map[string]interface{}{
+				"spec": map[string]interface{}{
+					"initContainers": []interface{}{
+						map[string]interface{}{"name": "migrate", "image": "migrate:latest"},
+					},
+					"containers": []interface{}{
+						map[string]interface{}{"name": "sidecar", "image": "sidecar:latest"},
+						map[string]interface{}{"name": "app", "image": "app:latest"},
+					},
+				},
+			},
+		},
+	}
+}
+
+func containerByName(t *testing.T, res engine.Resource, name string) map[string]interface{} {
+	t.Helper()
+	spec := res["spec"].(map[string]interface{})
+	tmpl := spec["template"].(map[string]interface{})
+	tSpec := tmpl["spec"].(map[string]interface{})
+	for _, c := range tSpec["containers"].([]interface{}) {
+		cMap := c.(map[string]interface{})
+		if cMap["name"] == name {
+			return cMap
+		}
+	}
+	t.Fatalf("container %q not found", name)
+	return nil
+}
+
+// A typo in `container` used to silently patch the FIRST container (here the
+// sidecar): its image/command were replaced and the pod broke.
+func TestPatchResources_UnknownContainerDoesNotPatchFirstContainer(t *testing.T) {
+	resources := []engine.Resource{makeMultiContainerDeployment()}
+	targets := []dev.Target{{Name: "multi", Container: "ap", Image: "app:dev", Command: []string{"sleep", "infinity"}}}
+
+	dev.PatchResources(resources, targets)
+
+	sidecar := containerByName(t, resources[0], "sidecar")
+	assert.Equal(t, "sidecar:latest", sidecar["image"], "sidecar must not be patched for an unknown container name")
+	_, hasCmd := sidecar["command"]
+	assert.False(t, hasCmd)
+}
+
+func TestResolveContainers_UnknownContainerIsAnError(t *testing.T) {
+	resources := []engine.Resource{makeMultiContainerDeployment()}
+	targets := []dev.Target{{Name: "multi", Container: "ap"}}
+
+	err := dev.ResolveContainers(targets, resources)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `container "ap" not found`)
+	assert.Contains(t, err.Error(), "sidecar, app")
+}
+
+func TestResolveContainers_InitContainerIsRejected(t *testing.T) {
+	resources := []engine.Resource{makeMultiContainerDeployment()}
+	targets := []dev.Target{{Name: "multi", Container: "migrate"}}
+
+	err := dev.ResolveContainers(targets, resources)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "init container")
+}
+
+func TestResolveContainers_DefaultsToFirstContainer(t *testing.T) {
+	resources := []engine.Resource{makeMultiContainerDeployment()}
+	targets := []dev.Target{
+		{Name: "multi"},
+		{Name: "external", Selector: map[string]string{"app": "pg"}},
+	}
+
+	require.NoError(t, dev.ResolveContainers(targets, resources))
+	assert.Equal(t, "sidecar", targets[0].Container, "default container is the first one, the same one PatchResources patches")
+	assert.Equal(t, "", targets[1].Container, "targets without a rendered workload keep the API default")
+}
+
+// Logs have no container parameter on the Cluster port; the pod template
+// annotation makes the API default (used by logs and by kubectl) point at the
+// dev container of a multi-container workload.
+func TestPatchResources_MarksDevContainerAsDefault(t *testing.T) {
+	resources := []engine.Resource{makeMultiContainerDeployment()}
+	targets := []dev.Target{{Name: "multi", Container: "app"}}
+
+	dev.PatchResources(resources, targets)
+
+	spec := resources[0]["spec"].(map[string]interface{})
+	tmpl := spec["template"].(map[string]interface{})
+	meta, ok := tmpl["metadata"].(map[string]interface{})
+	require.True(t, ok, "pod template metadata should be created")
+	annotations := meta["annotations"].(map[string]interface{})
+	assert.Equal(t, "app", annotations["kubectl.kubernetes.io/default-container"])
+}
+
+// Overriding `command` while keeping the workload's `args` produced e.g.
+// `sleep infinity --port 8080`, which crashes the dev container.
+func TestPatchResources_CommandOverrideDropsArgs(t *testing.T) {
+	res := makeWorkloadResource("web")
+	c := getFirstContainer(res)
+	c["args"] = []interface{}{"--port", "8080"}
+	resources := []engine.Resource{res}
+
+	dev.PatchResources(resources, []dev.Target{{Name: "web", Command: []string{"sleep", "infinity"}}})
+
+	c = getFirstContainer(resources[0])
+	assert.Equal(t, []interface{}{"sleep", "infinity"}, c["command"])
+	_, hasArgs := c["args"]
+	assert.False(t, hasArgs, "args of the original command must not be appended to the dev command")
+}

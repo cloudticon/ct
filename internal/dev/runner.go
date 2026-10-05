@@ -382,6 +382,9 @@ func Run(ctx context.Context, opts RunOpts) error {
 	if err := ResolveSelectors(targets, resources); err != nil {
 		return err
 	}
+	if err := ResolveContainers(targets, resources); err != nil {
+		return err
+	}
 	PatchResources(resources, targets)
 
 	resources = k8s.InjectReleaseLabels(resources, normalizedOpts.ReleaseName)
