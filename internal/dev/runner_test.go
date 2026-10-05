@@ -905,3 +905,32 @@ func TestStartDevFeatures_CancelledWhileWaitingForPodIsNotAnError(t *testing.T) 
 
 	require.NoError(t, startDevFeatures(ctx, dc, "ns", []Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
 }
+
+// With Ctrl+C cancelling ctx (instead of killing the process), a prompt()
+// blocked on stdin must give up when ctx is cancelled.
+func TestRun_CancelInterruptsPrompt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dev.ct"),
+		[]byte(`const user = prompt("Username?")
+config({ namespace: "dev-" + user })
+`), 0o644))
+
+	stdin, stdinWriter := io.Pipe() // never written: the prompt blocks
+	t.Cleanup(func() { _ = stdinWriter.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, RunOpts{Dir: dir, Stdin: stdin, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	}()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "interrupted")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run kept waiting for prompt input after ctx was cancelled")
+	}
+}

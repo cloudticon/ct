@@ -427,9 +427,12 @@ func Run(ctx context.Context, opts RunOpts) error {
 	devResult, err := engine.ExecuteDev(engine.ExecuteDevOpts{
 		JSCode:   devCode,
 		EnvVars:  envVars,
-		PromptFn: engine.MakePromptFn(promptCache, normalizedOpts.Stdin, normalizedOpts.Stdout),
+		PromptFn: cancellablePrompt(ctx, engine.MakePromptFn(promptCache, normalizedOpts.Stdin, normalizedOpts.Stdout)),
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("interrupted: %w", ctx.Err())
+		}
 		return fmt.Errorf("executing dev.ct: %w", err)
 	}
 
@@ -475,6 +478,32 @@ func Run(ctx context.Context, opts RunOpts) error {
 	}
 
 	return nil
+}
+
+// cancellablePrompt makes a blocking prompt give up when ctx is cancelled
+// (Ctrl+C). The read itself cannot be interrupted; it is abandoned, which is
+// fine because the process is about to exit.
+func cancellablePrompt(ctx context.Context, prompt func(string) (string, error)) func(string) (string, error) {
+	type answer struct {
+		value string
+		err   error
+	}
+	return func(question string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		ch := make(chan answer, 1)
+		go func() {
+			value, err := prompt(question)
+			ch <- answer{value, err}
+		}()
+		select {
+		case a := <-ch:
+			return a.value, a.err
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
 }
 
 func ensureRunNamespace(ctx context.Context, cluster k8s.Cluster, namespace string, createNamespace bool) error {
