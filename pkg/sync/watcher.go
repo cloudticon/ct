@@ -175,8 +175,11 @@ func (w *Watcher) fsnotifyLoop(ctx context.Context, fw *fsnotify.Watcher, out ch
 	timer := time.NewTimer(time.Hour)
 	timer.Stop()
 	flushDue := false
+	var batch []FileChange // pending as a slice, rebuilt only when it changed
+	dirty := false
 
 	add := func(change FileChange) {
+		dirty = true
 		if len(pending) == 0 {
 			pendingSince = time.Now()
 		}
@@ -201,12 +204,14 @@ func (w *Watcher) fsnotifyLoop(ctx context.Context, fw *fsnotify.Watcher, out ch
 		// slow upload): changes are merged into pending instead of piling
 		// up in the kernel queue, which can overflow and drop events.
 		var send chan<- []FileChange
-		var batch []FileChange
 		if flushDue && len(pending) > 0 {
 			send = out
-			batch = make([]FileChange, 0, len(pending))
-			for _, change := range pending {
-				batch = append(batch, change)
+			if dirty {
+				batch = make([]FileChange, 0, len(pending))
+				for _, change := range pending {
+					batch = append(batch, change)
+				}
+				dirty = false
 			}
 		}
 
@@ -216,6 +221,7 @@ func (w *Watcher) fsnotifyLoop(ctx context.Context, fw *fsnotify.Watcher, out ch
 			return
 		case send <- batch:
 			pending = make(map[string]FileChange)
+			batch = nil
 			flushDue = false
 		case <-timer.C:
 			flushDue = true
