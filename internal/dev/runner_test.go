@@ -934,3 +934,35 @@ config({ namespace: "dev-" + user })
 		t.Fatal("Run kept waiting for prompt input after ctx was cancelled")
 	}
 }
+
+func TestConvertTargets_RejectsOutOfRangePorts(t *testing.T) {
+	for _, ports := range [][]interface{}{
+		{int64(0)},
+		{int64(-1)},
+		{int64(70000)},
+		{[]interface{}{int64(8080), int64(0)}},
+		{[]interface{}{int64(65536), int64(80)}},
+	} {
+		_, err := convertTargets([]engine.RawDevTarget{{Name: "web", Ports: ports}})
+		require.Error(t, err, "ports %v", ports)
+		assert.Contains(t, err.Error(), "1-65535")
+	}
+}
+
+// Two rules forwarding the same local port can never both listen; the
+// second port-forward used to retry forever.
+func TestConvertTargets_RejectsDuplicateLocalPorts(t *testing.T) {
+	_, err := convertTargets([]engine.RawDevTarget{
+		{Name: "web", Ports: []interface{}{int64(8080)}},
+		{Name: "api", Ports: []interface{}{[]interface{}{int64(8080), int64(3000)}}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local port 8080")
+	assert.Contains(t, err.Error(), `"web"`)
+	assert.Contains(t, err.Error(), `"api"`)
+
+	_, err = convertTargets([]engine.RawDevTarget{
+		{Name: "web", Ports: []interface{}{int64(8080), []interface{}{int64(8080), int64(80)}}},
+	})
+	require.Error(t, err)
+}

@@ -640,6 +640,7 @@ func resolveValuesPath(dir string) string {
 
 func convertTargets(rawTargets []engine.RawDevTarget) ([]Target, error) {
 	targets := make([]Target, 0, len(rawTargets))
+	localPortOwner := map[int]string{}
 	for _, raw := range rawTargets {
 		syncRules, err := parseSyncRules(raw.Name, raw.Sync)
 		if err != nil {
@@ -649,6 +650,13 @@ func convertTargets(rawTargets []engine.RawDevTarget) ([]Target, error) {
 		portRules, err := parsePortRules(raw.Name, raw.Ports)
 		if err != nil {
 			return nil, err
+		}
+		for _, p := range portRules {
+			if owner, taken := localPortOwner[p.Local]; taken {
+				return nil, fmt.Errorf("local port %d is forwarded twice (targets %q and %q); each local port can only be forwarded once",
+					p.Local, owner, raw.Name)
+			}
+			localPortOwner[p.Local] = raw.Name
 		}
 
 		envVars, err := parseEnvVars(raw.Name, raw.Env)
@@ -743,6 +751,12 @@ func parsePortRules(targetName string, rawPorts []interface{}) ([]PortRule, erro
 			rules = append(rules, PortRule{Local: local, Remote: remote})
 		default:
 			return nil, fmt.Errorf("target %q: ports[%d] must be number or [local,remote]", targetName, i)
+		}
+		last := rules[len(rules)-1]
+		for _, port := range []int{last.Local, last.Remote} {
+			if port < 1 || port > 65535 {
+				return nil, fmt.Errorf("target %q: ports[%d]: port %d is out of range 1-65535", targetName, i, port)
+			}
 		}
 	}
 	return rules, nil
