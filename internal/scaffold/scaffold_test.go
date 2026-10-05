@@ -103,3 +103,17 @@ func TestInit_DoesNotCreateLegacyFiles(t *testing.T) {
 	_, err = os.Stat(filepath.Join(dir, ".ctts"))
 	assert.True(t, os.IsNotExist(err), ".ctts directory should not exist")
 }
+
+func TestInit_KeepsAnExistingAgentsMd(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# repo rules"), 0o644))
+
+	written, err := scaffold.Init(dir, scaffold.Options{})
+	require.NoError(t, err, "an existing AGENTS.md doesn't block init")
+	assert.Equal(t, []string{"main.ct", "values.json"}, written)
+
+	_, err = scaffold.Init(dir, scaffold.Options{Force: true})
+	require.NoError(t, err)
+	content, _ := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	assert.Equal(t, "# repo rules", string(content), "--force never overwrites AGENTS.md")
+}

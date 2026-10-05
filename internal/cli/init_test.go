@@ -59,3 +59,14 @@ func TestInitCmd_DoesNotOverwriteExistingProject(t *testing.T) {
 	content, _ := os.ReadFile(filepath.Join(dir, "values.json"))
 	assert.Equal(t, `{"mine":true}`, string(content))
 }
+
+func TestInitCmd_DirectoryArgument(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "myproject")
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{projectDir})
+	cmd.SetOut(new(bytes.Buffer))
+
+	require.NoError(t, cmd.Execute())
+	assert.FileExists(t, filepath.Join(projectDir, "main.ct"))
+}

@@ -241,8 +241,9 @@ func collectUniqueWorkloadNames(dir string) []string {
 	}
 
 	resources, err := engine.Execute(engine.ExecuteOpts{
-		JSCode: js,
-		Values: values,
+		JSCode:  js,
+		Values:  values,
+		Timeout: renderTimeout,
 	})
 	if err != nil {
 		return nil

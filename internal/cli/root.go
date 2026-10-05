@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 
 	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/spf13/cobra"
@@ -20,7 +21,14 @@ var rootCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if errorFormat != "text" && errorFormat != "json" {
+		switch errorFormat {
+		case "text":
+		case "json":
+			// Keep stderr a single JSON document: drop progress lines
+			// ("applied ...", "deleted ...") that would interleave with it.
+			log.SetOutput(io.Discard)
+			cmd.Root().SetErr(io.Discard)
+		default:
 			return fmt.Errorf("unsupported --error-format %q (expected text or json)", errorFormat)
 		}
 		return nil

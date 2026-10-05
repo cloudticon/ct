@@ -57,27 +57,30 @@ read in code as ` + "`Values.<key>`" + `.
 
 // Options configures Init.
 type Options struct {
-	// Force overwrites files that already exist.
+	// Force overwrites an existing main.ct and values.json.
 	Force bool
 }
 
 // Init writes a starter project into dir: main.ct, values.json and an
-// AGENTS.md telling coding agents how to work with it. It refuses to touch
-// existing files unless opts.Force is set, and returns the files written.
+// AGENTS.md telling coding agents how to work with it. It refuses to touch an
+// existing main.ct or values.json unless opts.Force is set. An existing
+// AGENTS.md is never touched: it may be the repository's own. Init returns
+// the files written.
 func Init(dir string, opts Options) ([]string, error) {
 	files := []struct {
-		name    string
-		content string
+		name     string
+		content  string
+		optional bool // skipped when present, even with Force
 	}{
-		{"main.ct", mainCtTemplate},
-		{"values.json", valuesJsonTemplate},
-		{"AGENTS.md", agentsMdTemplate},
+		{"main.ct", mainCtTemplate, false},
+		{"values.json", valuesJsonTemplate, false},
+		{"AGENTS.md", agentsMdTemplate, true},
 	}
 
 	if !opts.Force {
 		var existing []string
 		for _, f := range files {
-			if _, err := os.Stat(filepath.Join(dir, f.name)); err == nil {
+			if !f.optional && fileExists(filepath.Join(dir, f.name)) {
 				existing = append(existing, f.name)
 			}
 		}
@@ -92,10 +95,18 @@ func Init(dir string, opts Options) ([]string, error) {
 	written := make([]string, 0, len(files))
 	for _, f := range files {
 		path := filepath.Join(dir, f.name)
+		if f.optional && fileExists(path) {
+			continue
+		}
 		if err := os.WriteFile(path, []byte(f.content), 0o644); err != nil {
 			return written, fmt.Errorf("writing %s: %w", path, err)
 		}
 		written = append(written, f.name)
 	}
 	return written, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

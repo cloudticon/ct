@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 
 	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func withErrorFormat(t *testing.T, format string) {
@@ -54,4 +57,24 @@ func TestPrintError_JSONPlainError(t *testing.T) {
 	PrintError(&buf, errors.New("boom"))
 
 	assert.JSONEq(t, `{"errors":[{"code":"error","message":"boom"}]}`, buf.String())
+}
+
+func TestErrorFormatJSON_SilencesProgressOutput(t *testing.T) {
+	fake := withFakeCluster(t)
+	seedRelease(t, fake, "prod", "api", 2)
+	var logs, stderr bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() {
+		log.SetOutput(os.Stderr)
+		errorFormat = "text"
+		rootCmd.SetArgs(nil)
+		rootCmd.SetErr(nil)
+	})
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"--error-format", "json", "delete", "api", "-n", "prod"})
+
+	require.NoError(t, rootCmd.Execute())
+
+	assert.Empty(t, logs.String())
+	assert.Empty(t, stderr.String())
 }

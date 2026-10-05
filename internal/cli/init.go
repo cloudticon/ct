@@ -13,11 +13,17 @@ func newInitCmd() *cobra.Command {
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:   "init",
+		Use:   "init [dir]",
 		Short: "Initialize a new ct project",
-		Long:  "Creates main.ct, values.json and AGENTS.md (instructions for AI coding agents) in the target directory. Existing files are kept unless --force is given.",
-		Args:  cobra.NoArgs,
+		Long:  "Creates main.ct, values.json and AGENTS.md (instructions for AI coding agents) in the target directory. An existing main.ct or values.json is kept unless --force is given; an existing AGENTS.md is always kept.",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if cmd.Flags().Changed("dir") && args[0] != dir {
+					return fmt.Errorf("give the directory either as an argument or with --dir, not both")
+				}
+				dir = args[0]
+			}
 			written, err := scaffold.Init(dir, scaffold.Options{Force: force})
 			if err != nil {
 				return fmt.Errorf("init failed: %w", err)
