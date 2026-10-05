@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	stdsync "sync"
+	"time"
 
 	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/fatih/color"
@@ -27,6 +28,10 @@ type SyncRule struct {
 	// the API server default, which only works for single-container pods.
 	Container string
 }
+
+// podCheckInterval is how often a running syncer checks whether its pod
+// was replaced.
+var podCheckInterval = 3 * time.Second
 
 // Syncer performs initial and incremental sync.
 type Syncer struct {
@@ -114,19 +119,59 @@ func (s *Syncer) run(ctx context.Context, signalReady func()) error {
 
 	signalReady()
 
-	for batch := range changes {
-		if err := s.incrementalSync(ctx, batch); err != nil {
-			log.Printf("%s incremental sync error: %v", color.YellowString("[sync]"), err)
+	podCheck := time.NewTicker(podCheckInterval)
+	defer podCheck.Stop()
+	for {
+		select {
+		case batch, ok := <-changes:
+			if !ok {
+				if err := watcher.Err(); err != nil {
+					return fmt.Errorf("watching %s stopped: %w", s.rule.From, err)
+				}
+				if errors.Is(ctx.Err(), context.Canceled) {
+					return nil
+				}
+				return ctx.Err()
+			}
+			if s.podName == "" {
+				// The last re-sync failed; a successful full sync also
+				// covers this batch.
+				s.followPod(ctx)
+				continue
+			}
+			if err := s.incrementalSync(ctx, batch); err != nil && ctx.Err() == nil {
+				log.Printf("%s incremental sync error: %v", color.YellowString("[sync]"), err)
+				// The usual cause is that the pod is gone; move on to its
+				// replacement (the full sync covers this batch as well).
+				s.followPod(ctx)
+			}
+		case <-podCheck.C:
+			s.followPod(ctx)
 		}
 	}
+}
 
-	if err := watcher.Err(); err != nil {
-		return fmt.Errorf("watching %s stopped: %w", s.rule.From, err)
+// followPod re-resolves the target pod and, when it has been replaced (a
+// rollout, an eviction, or the rollout triggered by ct dev's own workload
+// patch while the old pod was still running), runs a full sync into the new
+// pod: it starts from the image and has none of the synced files.
+func (s *Syncer) followPod(ctx context.Context) {
+	pod, err := s.exec.WaitPod(ctx, s.namespace, s.selector)
+	if err != nil || pod == s.podName {
+		return
 	}
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return nil
+	previous := s.podName
+	s.podName = pod
+	if err := s.initialSync(ctx); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("%s re-sync into new pod %s failed, will retry: %v", color.YellowString("[sync]"), pod, err)
+		}
+		s.podName = "" // retry on the next check
+		return
 	}
-	return ctx.Err()
+	if previous != "" {
+		log.Printf("%s pod %s replaced by %s, re-synced %s", color.CyanString("[sync]"), previous, pod, s.rule.From)
+	}
 }
 
 func (s *Syncer) execStream(ctx context.Context, cmd []string, stdin io.Reader) error {

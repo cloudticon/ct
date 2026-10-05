@@ -385,3 +385,107 @@ func TestSyncerInitialSync_MissingToolHint(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `runs tar, mkdir and rm in container "app"`)
 }
+
+// podSwitchingExecutor serves pod-1 until switchPod() is called and pod-2
+// afterwards, recording which pod every tar went to.
+type podSwitchingExecutor struct {
+	mu       sync.Mutex
+	current  string
+	tarsTo   []string
+	failPods map[string]bool
+}
+
+func (p *podSwitchingExecutor) WaitPod(ctx context.Context, _ string, _ k8s.Selector) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.current, nil
+}
+
+func (p *podSwitchingExecutor) ExecPod(_ context.Context, _, pod string, opts k8s.ExecOpts) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failPods[pod] {
+		return fmt.Errorf("pods %q not found", pod)
+	}
+	if opts.Command[0] == "tar" {
+		p.tarsTo = append(p.tarsTo, pod)
+	}
+	return nil
+}
+
+func (p *podSwitchingExecutor) switchPod(failOld bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if failOld {
+		p.failPods = map[string]bool{p.current: true}
+	}
+	p.current = "pod-2"
+}
+
+func (p *podSwitchingExecutor) tarredTo(pod string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, t := range p.tarsTo {
+		if t == pod {
+			return true
+		}
+	}
+	return false
+}
+
+func setPodCheckInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := podCheckInterval
+	podCheckInterval = d
+	t.Cleanup(func() { podCheckInterval = orig })
+}
+
+// When the pod is replaced (rollout, eviction, the rollout triggered by
+// ct dev's own patch), the new pod starts from the image: it must get a full
+// sync even if nothing changes locally.
+func TestSyncerRun_ResyncsWhenPodIsReplaced(t *testing.T) {
+	setPodCheckInterval(t, 20*time.Millisecond)
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644))
+
+	exec := &podSwitchingExecutor{current: "pod-1"}
+	s := NewSyncer(exec, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app", Polling: true})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return exec.tarredTo("pod-1") }, 2*time.Second, 10*time.Millisecond)
+	exec.switchPod(true)
+	require.Eventually(t, func() bool { return exec.tarredTo("pod-2") }, 2*time.Second, 10*time.Millisecond,
+		"the replacement pod never received the synced files")
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+// An incremental sync that fails because the pod is gone must move to the
+// new pod right away instead of failing against the old one forever.
+func TestSyncerRun_FailedIncrementalSyncMovesToNewPod(t *testing.T) {
+	setPodCheckInterval(t, time.Hour)
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644))
+
+	exec := &podSwitchingExecutor{current: "pod-1"}
+	s := NewSyncer(exec, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app", Polling: true})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	require.Eventually(t, func() bool { return exec.tarredTo("pod-1") }, 2*time.Second, 10*time.Millisecond)
+	exec.switchPod(true)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "b.txt"), []byte("y"), 0o644))
+	require.Eventually(t, func() bool { return exec.tarredTo("pod-2") }, 3*time.Second, 10*time.Millisecond,
+		"sync kept targeting the deleted pod")
+
+	cancel()
+	require.NoError(t, <-done)
+}
