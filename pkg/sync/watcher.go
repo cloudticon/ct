@@ -3,16 +3,27 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	stdsync "sync"
+	"syscall"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/fsnotify/fsnotify"
 )
 
-const debounceWindow = 300 * time.Millisecond
+const (
+	debounceWindow = 300 * time.Millisecond
+	// maxDebounce bounds how long a continuous stream of events (e.g. a
+	// build writing files) can postpone a flush.
+	maxDebounce = 2 * time.Second
+)
+
+// newFSWatcher is a seam for tests.
+var newFSWatcher = fsnotify.NewWatcher
 
 // ChangeType describes a file system change type.
 type ChangeType int
@@ -36,6 +47,9 @@ type Watcher struct {
 	polling   bool
 	excluder  *pathExcluder
 	pollEvery time.Duration
+
+	mu  stdsync.Mutex
+	err error
 }
 
 // NewWatcher creates a watcher for root.
@@ -70,92 +84,156 @@ func NewWatcher(root string, exclude []string, polling bool) (*Watcher, error) {
 }
 
 // Watch starts watching and returns a channel of debounced change batches.
-func (w *Watcher) Watch(ctx context.Context) <-chan []FileChange {
+// It returns only once the watcher is established, so every change made
+// after Watch returns is reported. The channel is closed when ctx is done or
+// the watcher fails; Err reports the failure.
+func (w *Watcher) Watch(ctx context.Context) (<-chan []FileChange, error) {
 	out := make(chan []FileChange)
 	if w.polling {
-		go w.pollLoop(ctx, out)
-	} else {
-		go w.fsnotifyLoop(ctx, out)
+		prev, err := w.snapshot()
+		if err != nil {
+			return nil, fmt.Errorf("scanning %s: %w", w.root, err)
+		}
+		go w.pollLoop(ctx, prev, out)
+		return out, nil
 	}
-	return out
+
+	fw, err := newFSWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("creating file watcher: %w%s", err, watchLimitHint(err))
+	}
+	if err := w.addWatches(fw, w.root, nil); err != nil {
+		_ = fw.Close()
+		return nil, err
+	}
+	go w.fsnotifyLoop(ctx, fw, out)
+	return out, nil
 }
 
-func (w *Watcher) fsnotifyLoop(ctx context.Context, out chan<- []FileChange) {
-	defer close(out)
+// Err returns the error that stopped the watcher, if any.
+func (w *Watcher) Err() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.err
+}
 
-	fw, err := fsnotify.NewWatcher()
-	if err != nil {
-		return
+func (w *Watcher) setErr(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err == nil {
+		w.err = err
 	}
-	defer fw.Close()
+}
 
-	_ = filepath.WalkDir(w.root, func(path string, d os.DirEntry, walkErr error) error {
+// addWatches watches dir and every non-excluded directory below it. When
+// onFile is set it is called for every non-excluded file found on the way.
+// Running out of watches is an error: silently unwatched directories would
+// mean silently unsynced changes.
+func (w *Watcher) addWatches(fw *fsnotify.Watcher, dir string, onFile func(path string)) error {
+	return filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		if !d.IsDir() {
+		if path != w.root && w.isExcluded(path, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		if w.isExcluded(path, true) && path != w.root {
-			return filepath.SkipDir
+		if !d.IsDir() {
+			if onFile != nil {
+				onFile(path)
+			}
+			return nil
 		}
-		_ = fw.Add(path)
+		if err := fw.Add(path); err != nil && isWatchLimitError(err) {
+			return fmt.Errorf("watching %s: %w%s", path, err, watchLimitHint(err))
+		}
 		return nil
 	})
+}
+
+func isWatchLimitError(err error) bool {
+	return errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE)
+}
+
+func watchLimitHint(err error) string {
+	if !isWatchLimitError(err) {
+		return ""
+	}
+	return " (the OS file-watch limit is exhausted: exclude large directories such as node_modules, " +
+		"raise fs.inotify.max_user_watches / fs.inotify.max_user_instances on Linux, " +
+		"or set polling: true on this sync rule)"
+}
+
+func (w *Watcher) fsnotifyLoop(ctx context.Context, fw *fsnotify.Watcher, out chan<- []FileChange) {
+	defer close(out)
+	defer fw.Close()
 
 	pending := make(map[string]FileChange)
-	var timer *time.Timer
-	var timerCh <-chan time.Time
+	var pendingSince time.Time
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	flushDue := false
 
-	resetTimer := func() {
-		if timer == nil {
-			timer = time.NewTimer(debounceWindow)
-			timerCh = timer.C
-			return
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
-		timer.Reset(debounceWindow)
-	}
-	flush := func() {
+	add := func(change FileChange) {
 		if len(pending) == 0 {
-			return
+			pendingSince = time.Now()
 		}
-		batch := make([]FileChange, 0, len(pending))
-		for _, change := range pending {
-			batch = append(batch, change)
+		if prev, exists := pending[change.Path]; exists {
+			pending[change.Path] = mergeChangeTypes(prev, change)
+		} else {
+			pending[change.Path] = change
 		}
-		pending = make(map[string]FileChange)
-		select {
-		case out <- batch:
-		case <-ctx.Done():
+		// Debounce, but never postpone a flush beyond maxDebounce.
+		if !flushDue && time.Since(pendingSince) < maxDebounce {
+			timer.Reset(debounceWindow)
 		}
 	}
-	defer func() {
-		if timer != nil {
-			timer.Stop()
+	addFile := func(path string, typ ChangeType) {
+		if rel, err := w.rel(path); err == nil && rel != "." {
+			add(FileChange{Path: rel, Type: typ})
 		}
-		flush()
-	}()
+	}
 
 	for {
+		// Keep consuming events while the receiver is busy (initial sync,
+		// slow upload): changes are merged into pending instead of piling
+		// up in the kernel queue, which can overflow and drop events.
+		var send chan<- []FileChange
+		var batch []FileChange
+		if flushDue && len(pending) > 0 {
+			send = out
+			batch = make([]FileChange, 0, len(pending))
+			for _, change := range pending {
+				batch = append(batch, change)
+			}
+		}
+
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
+		case send <- batch:
+			pending = make(map[string]FileChange)
+			flushDue = false
+		case <-timer.C:
+			flushDue = true
 		case err, ok := <-fw.Errors:
 			if !ok {
+				w.setErr(errors.New("file watcher stopped"))
 				return
 			}
-			if err != nil {
-				// Keep watching on fsnotify errors.
-				continue
+			if errors.Is(err, fsnotify.ErrEventOverflow) {
+				// Events were dropped: rescan everything so nothing is missed.
+				if err := w.addWatches(fw, w.root, func(path string) { addFile(path, ChangeModify) }); err != nil {
+					w.setErr(err)
+					return
+				}
 			}
 		case event, ok := <-fw.Events:
 			if !ok {
+				w.setErr(errors.New("file watcher stopped"))
 				return
 			}
 
@@ -165,39 +243,24 @@ func (w *Watcher) fsnotifyLoop(ctx context.Context, out chan<- []FileChange) {
 			}
 
 			if event.Op&fsnotify.Create != 0 && isDir {
-				_ = filepath.WalkDir(event.Name, func(path string, d os.DirEntry, walkErr error) error {
-					if walkErr != nil || !d.IsDir() {
-						return nil
-					}
-					if w.isExcluded(path, true) && path != w.root {
-						return filepath.SkipDir
-					}
-					_ = fw.Add(path)
-					return nil
-				})
+				if err := w.addWatches(fw, event.Name, nil); err != nil {
+					w.setErr(err)
+					return
+				}
 			}
 
 			change, ok := w.toFileChange(event)
 			if !ok {
 				continue
 			}
-			prev, exists := pending[change.Path]
-			if exists {
-				pending[change.Path] = mergeChangeTypes(prev, change)
-			} else {
-				pending[change.Path] = change
-			}
-			resetTimer()
-		case <-timerCh:
-			flush()
+			add(change)
 		}
 	}
 }
 
-func (w *Watcher) pollLoop(ctx context.Context, out chan<- []FileChange) {
+func (w *Watcher) pollLoop(ctx context.Context, prev map[string]fileState, out chan<- []FileChange) {
 	defer close(out)
 
-	prev, _ := w.snapshot()
 	ticker := time.NewTicker(w.pollEvery)
 	defer ticker.Stop()
 

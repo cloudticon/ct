@@ -249,3 +249,74 @@ func TestSyncer_ExecsTargetContainer(t *testing.T) {
 		assert.Equal(t, "app", call.Container, "exec %v must target the configured container", call.Command)
 	}
 }
+
+func tarEntryNames(t *testing.T, r io.Reader) []string {
+	t.Helper()
+	var names []string
+	tr := tar.NewReader(r)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return names
+		}
+		require.NoError(t, err)
+		names = append(names, h.Name)
+	}
+}
+
+// A file saved while the initial sync is uploading used to be lost: the tar
+// snapshot did not contain it yet and the watcher only started afterwards.
+func TestSyncerRun_ChangeDuringInitialSyncIsSynced(t *testing.T) {
+	for _, polling := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fsnotify", true: "polling"}[polling], func(t *testing.T) {
+			root := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("a"), 0o644))
+
+			initialInFlight := make(chan struct{})
+			releaseInitial := make(chan struct{})
+			var mu sync.Mutex
+			var tars [][]string
+			fake := &fakePodExecutor{ExecFn: func(_ context.Context, _, _ string, opts k8s.ExecOpts) error {
+				if opts.Command[0] != "tar" {
+					return nil
+				}
+				names := tarEntryNames(t, opts.Stdin)
+				mu.Lock()
+				tars = append(tars, names)
+				first := len(tars) == 1
+				mu.Unlock()
+				if first {
+					close(initialInFlight)
+					<-releaseInitial
+				}
+				return nil
+			}}
+			s := NewSyncer(fake, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app", Polling: polling})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- s.Run(ctx) }()
+
+			<-initialInFlight
+			require.NoError(t, os.WriteFile(filepath.Join(root, "b.txt"), []byte("b"), 0o644))
+			close(releaseInitial)
+
+			require.Eventually(t, func() bool {
+				mu.Lock()
+				defer mu.Unlock()
+				for _, names := range tars[1:] {
+					for _, n := range names {
+						if n == "b.txt" {
+							return true
+						}
+					}
+				}
+				return false
+			}, 3*time.Second, 20*time.Millisecond, "b.txt changed during the initial sync was never synced")
+
+			cancel()
+			require.NoError(t, <-done)
+		})
+	}
+}

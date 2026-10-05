@@ -87,6 +87,20 @@ func (s *Syncer) run(ctx context.Context, signalReady func()) error {
 		return errors.New("sync rule requires non-empty from and to")
 	}
 
+	watcher, err := NewWatcher(s.rule.From, s.rule.Exclude, s.rule.Polling)
+	if err != nil {
+		return err
+	}
+	// Watch before the initial snapshot is taken: a file saved while the
+	// initial sync is uploading is then reported afterwards instead of being
+	// lost between the snapshot and the start of the watcher.
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	changes, err := watcher.Watch(watchCtx)
+	if err != nil {
+		return err
+	}
+
 	pod, err := s.exec.WaitPod(ctx, s.namespace, s.selector)
 	if err != nil {
 		return err
@@ -99,17 +113,15 @@ func (s *Syncer) run(ctx context.Context, signalReady func()) error {
 
 	signalReady()
 
-	watcher, err := NewWatcher(s.rule.From, s.rule.Exclude, s.rule.Polling)
-	if err != nil {
-		return err
-	}
-
-	for changes := range watcher.Watch(ctx) {
-		if err := s.incrementalSync(ctx, changes); err != nil {
+	for batch := range changes {
+		if err := s.incrementalSync(ctx, batch); err != nil {
 			log.Printf("%s incremental sync error: %v", color.YellowString("[sync]"), err)
 		}
 	}
 
+	if err := watcher.Err(); err != nil {
+		return fmt.Errorf("watching %s stopped: %w", s.rule.From, err)
+	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return nil
 	}

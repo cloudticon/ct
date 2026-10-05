@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -47,8 +49,8 @@ func TestWatcherPolling_EmitsCreateAndDelete(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	ch := w.Watch(ctx)
-	time.Sleep(120 * time.Millisecond)
+	ch, err := w.Watch(ctx)
+	require.NoError(t, err)
 
 	target := filepath.Join(root, "notes.txt")
 	require.NoError(t, os.WriteFile(target, []byte("hello"), 0o644))
@@ -69,7 +71,8 @@ func TestWatcherFsnotify_DebouncesRapidChanges(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	ch := w.Watch(ctx)
+	ch, err := w.Watch(ctx)
+	require.NoError(t, err)
 	target := filepath.Join(root, "rapid.txt")
 
 	require.NoError(t, os.WriteFile(target, []byte("a"), 0o644))
@@ -95,5 +98,39 @@ func waitBatch(t *testing.T, ch <-chan []FileChange) []FileChange {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for watcher batch")
 		return nil
+	}
+}
+
+func TestWatcher_ReportsWatcherCreationFailureWithHint(t *testing.T) {
+	orig := newFSWatcher
+	t.Cleanup(func() { newFSWatcher = orig })
+	newFSWatcher = func() (*fsnotify.Watcher, error) { return nil, syscall.EMFILE }
+
+	w, err := NewWatcher(t.TempDir(), nil, false)
+	require.NoError(t, err)
+	_, err = w.Watch(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "polling: true", "the error must tell the user how to get unstuck")
+}
+
+// A watcher that could not start used to close its channel silently, so
+// Syncer.Run returned nil and sync stopped without any message.
+func TestSyncerRun_FailsWhenWatcherCannotStart(t *testing.T) {
+	orig := newFSWatcher
+	t.Cleanup(func() { newFSWatcher = orig })
+	newFSWatcher = func() (*fsnotify.Watcher, error) { return nil, syscall.EMFILE }
+
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644))
+	s := NewSyncer(&fakePodExecutor{}, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app"})
+
+	done := make(chan error, 1)
+	go func() { done <- s.Run(context.Background()) }()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "too many open files")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run kept running although no file watcher could be created")
 	}
 }
