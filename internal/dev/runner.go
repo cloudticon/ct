@@ -705,14 +705,26 @@ func parseSyncRules(targetName string, rawSync []map[string]interface{}) ([]Sync
 			To:   to,
 		}
 
-		if rawExclude, ok := rawRule["exclude"].([]interface{}); ok {
-			rule.Exclude = make([]string, 0, len(rawExclude))
-			for _, item := range rawExclude {
-				rule.Exclude = append(rule.Exclude, fmt.Sprint(item))
+		if rawExclude, present := rawRule["exclude"]; present && rawExclude != nil {
+			list, ok := rawExclude.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("target %q: sync[%d].exclude must be an array of patterns, got %T", targetName, i, rawExclude)
+			}
+			rule.Exclude = make([]string, 0, len(list))
+			for j, item := range list {
+				pattern, ok := item.(string)
+				if !ok {
+					return nil, fmt.Errorf("target %q: sync[%d].exclude[%d] must be a string, got %T", targetName, i, j, item)
+				}
+				rule.Exclude = append(rule.Exclude, pattern)
 			}
 		}
 
-		if polling, ok := rawRule["polling"].(bool); ok {
+		if rawPolling, present := rawRule["polling"]; present && rawPolling != nil {
+			polling, ok := rawPolling.(bool)
+			if !ok {
+				return nil, fmt.Errorf("target %q: sync[%d].polling must be a boolean, got %T", targetName, i, rawPolling)
+			}
 			rule.Polling = polling
 		}
 
@@ -770,8 +782,14 @@ func parseEnvVars(targetName string, rawEnv []map[string]interface{}) ([]EnvVar,
 			return nil, fmt.Errorf("target %q: env[%d].name must be a non-empty string", targetName, i)
 		}
 		value := ""
-		if rawValue, exists := raw["value"]; exists {
-			value = fmt.Sprint(rawValue)
+		switch v := raw["value"].(type) {
+		case nil:
+			// Missing/undefined/null: an empty value, as in Kubernetes
+			// (it used to become the string "<nil>").
+		case string, int64, float64, bool:
+			value = fmt.Sprint(v)
+		default:
+			return nil, fmt.Errorf("target %q: env[%d].value must be a string, number or boolean, got %T", targetName, i, v)
 		}
 		result = append(result, EnvVar{Name: name, Value: value})
 	}

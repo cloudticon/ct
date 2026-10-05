@@ -457,3 +457,69 @@ func TestExecuteDev_EnvNumberDefaultAcceptsDecimals(t *testing.T) {
 	assert.Equal(t, 0.25, result.Values["ratio"])
 	assert.Equal(t, int64(8080), result.Values["port"])
 }
+
+// Options of the wrong shape used to be ignored silently: e.g. a string
+// command left the original command running, a DevSpace-style "src:dst"
+// sync string meant no sync at all, and a null selector value became the
+// label value "<nil>" so ct dev waited for a pod forever.
+func TestExecuteDev_RejectsMistypedOptions(t *testing.T) {
+	cases := map[string]struct {
+		js   string
+		want []string
+	}{
+		"command string":        {`dev("web", { command: "npm run dev" })`, []string{`"web"`, "command", "array"}},
+		"command null item":     {`dev("web", { command: ["npm", null] })`, []string{"command[1]"}},
+		"sync string":           {`dev("web", { sync: ["./:/app"] })`, []string{"sync[0]", "object"}},
+		"sync not array":        {`dev("web", { sync: { from: "./", to: "/app" } })`, []string{"sync", "array"}},
+		"env string":            {`dev("web", { env: ["FOO=bar"] })`, []string{"env[0]", "object"}},
+		"ports not array":       {`dev("web", { ports: 3000 })`, []string{"ports", "array"}},
+		"selector not object":   {`dev("web", { selector: "app=web" })`, []string{"selector", "object"}},
+		"selector empty":        {`dev("web", { selector: {} })`, []string{"selector", "empty"}},
+		"selector undefined":    {`const v = {}; dev("web", { selector: { app: v.missing } })`, []string{`selector "app"`}},
+		"terminal not string":   {`dev("web", { terminal: ["bash"] })`, []string{"terminal", "string"}},
+		"container not string":  {`dev("web", { container: 1 })`, []string{"container", "string"}},
+		"image not string":      {`dev("web", { image: { name: "x" } })`, []string{"image", "string"}},
+		"workingDir not string": {`dev("web", { workingDir: 1 })`, []string{"workingDir", "string"}},
+		"probes not bool":       {`dev("web", { probes: "true" })`, []string{"probes", "boolean"}},
+		"replicas not number":   {`dev("web", { replicas: "1" })`, []string{"replicas", "number"}},
+		"replicas fraction":     {`dev("web", { replicas: 1.5 })`, []string{"replicas", "integer"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: tc.js, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+			require.Error(t, err)
+			for _, want := range tc.want {
+				assert.Contains(t, err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestExecuteDev_UndefinedOptionsAreIgnored(t *testing.T) {
+	js := `const v = {}; dev("web", { terminal: v.t, command: v.c, sync: v.s, ports: v.p, selector: v.sel, probes: v.pr, replicas: v.r })`
+	result, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: js, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+	require.NoError(t, err)
+	require.Len(t, result.Targets, 1)
+	assert.Nil(t, result.Targets[0].Selector)
+	assert.Nil(t, result.Targets[0].Probes)
+	assert.Nil(t, result.Targets[0].Replicas)
+}
+
+// An empty or mistyped namespace used to fall back silently to the
+// kubeconfig's default namespace, applying (and pruning) dev resources there.
+func TestExecuteDev_ConfigRejectsMissingOrMistypedNamespace(t *testing.T) {
+	for _, js := range []string{
+		`config({ namespace: "" })`,
+		`const v = {}; config({ namespace: v.missing })`,
+		`config({ values: { a: 1 } })`,
+		`config({ namespace: 5 })`,
+	} {
+		_, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: js, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+		require.Error(t, err, js)
+		assert.Contains(t, err.Error(), "namespace", js)
+	}
+
+	_, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: `config({ namespace: "ns", values: "x" })`, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "values")
+}

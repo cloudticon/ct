@@ -966,3 +966,35 @@ func TestConvertTargets_RejectsDuplicateLocalPorts(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestConvertTargets_RejectsMistypedSyncOptions(t *testing.T) {
+	_, err := convertTargets([]engine.RawDevTarget{{Name: "web", Sync: []map[string]interface{}{
+		{"from": "./", "to": "/app", "exclude": "node_modules"},
+	}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync[0].exclude")
+
+	_, err = convertTargets([]engine.RawDevTarget{{Name: "web", Sync: []map[string]interface{}{
+		{"from": "./", "to": "/app", "polling": "true"},
+	}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync[0].polling")
+}
+
+// {name: "X", value: undefined} used to set the env var to the string "<nil>".
+func TestConvertTargets_EnvValues(t *testing.T) {
+	targets, err := convertTargets([]engine.RawDevTarget{{Name: "web", Env: []map[string]interface{}{
+		{"name": "UNSET", "value": nil},
+		{"name": "MISSING"},
+		{"name": "PORT", "value": int64(8080)},
+		{"name": "DEBUG", "value": true},
+	}}})
+	require.NoError(t, err)
+	assert.Equal(t, []EnvVar{{"UNSET", ""}, {"MISSING", ""}, {"PORT", "8080"}, {"DEBUG", "true"}}, targets[0].Env)
+
+	_, err = convertTargets([]engine.RawDevTarget{{Name: "web", Env: []map[string]interface{}{
+		{"name": "OBJ", "value": map[string]interface{}{"a": int64(1)}},
+	}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "env[0].value")
+}
