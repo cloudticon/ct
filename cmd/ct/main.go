@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 
@@ -11,7 +10,7 @@ import (
 func main() {
 	log.SetFlags(0)
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		cli.PrintError(os.Stderr, err)
 		os.Exit(1)
 	}
 }

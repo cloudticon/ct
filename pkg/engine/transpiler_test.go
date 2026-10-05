@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,7 +46,8 @@ func TestBundle_InvalidTS(t *testing.T) {
 	tr := engine.NewTranspiler("")
 	_, err = tr.Bundle(entry)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "esbuild")
+	assert.Contains(t, err.Error(), "main.ts:1:6")
+	assert.Contains(t, err.Error(), "[syntax]")
 }
 
 func TestBundle_IIFEFormat(t *testing.T) {
@@ -266,7 +268,7 @@ func TestBundle_RejectsAsyncFunction(t *testing.T) {
 	_, err = tr.Bundle(entry)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "async")
-	assert.Contains(t, err.Error(), "line 1")
+	assert.Contains(t, err.Error(), "main.ct:1:1")
 }
 
 func TestBundle_RejectsAwait(t *testing.T) {
@@ -279,7 +281,7 @@ func TestBundle_RejectsAwait(t *testing.T) {
 	_, err = tr.Bundle(entry)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "await")
-	assert.Contains(t, err.Error(), "line 2")
+	assert.Contains(t, err.Error(), "main.ct:2:14")
 }
 
 func TestBundle_RejectsAsyncArrow(t *testing.T) {
@@ -339,4 +341,68 @@ console.log(entry);
 	js, err := tr.Bundle(entry)
 	require.NoError(t, err)
 	assert.Contains(t, js, "ts-wins")
+}
+
+func TestBundle_AsyncWordsInCommentsStringsAndNamesAreFine(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`// we never await anything here
+/* async is mentioned in a comment */
+const name = "async-worker";
+const awaitingApproval = true;
+const tpl = `+"`await ${name}`"+`;
+function* gen() { yield 1; }
+console.log(name, awaitingApproval, tpl, [...gen()]);
+`), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+	require.NoError(t, err)
+}
+
+func TestBundle_ResolvesRelativeImportsWithoutExtension(t *testing.T) {
+	dir := t.TempDir()
+	writeTS(t, dir, "lib/helper.ct", `export const helper = () => "from-ct";`)
+	writeTS(t, dir, "lib/util/index.ts", `export const util = () => "from-index";`)
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { helper } from "./lib/helper";
+import { util } from "./lib/util";
+console.log(helper(), util());
+`), 0o644))
+
+	js, err := engine.NewTranspiler(dir).Bundle(entry)
+	require.NoError(t, err)
+	assert.Contains(t, js, "from-ct")
+	assert.Contains(t, js, "from-index")
+}
+
+func TestBundle_ReportsUnresolvedImportsWithHints(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import _ from "lodash";
+import { x } from "./missing";
+console.log(_, x);
+`), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 2)
+	assert.Equal(t, diag.CodeImport, list[0].Code)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 1, list[0].Line)
+	assert.Contains(t, list[0].Hint, "doesn't use npm")
+	assert.Equal(t, 2, list[1].Line)
+	assert.Contains(t, list[1].Hint, "relative to the importing file")
+}
+
+func TestBundle_RelativeEntryPointAndProjectDir(t *testing.T) {
+	dir := t.TempDir()
+	writeTS(t, dir, "app/main.ct", `import { v } from "./v"; console.log(v);`)
+	writeTS(t, dir, "app/v.ct", `export const v = "relative-ok";`)
+	t.Chdir(dir)
+
+	js, err := engine.NewTranspiler("app").Bundle(filepath.Join("app", "main.ct"))
+	require.NoError(t, err)
+	assert.Contains(t, js, "relative-ok")
 }

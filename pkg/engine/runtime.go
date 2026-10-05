@@ -1,9 +1,12 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/dop251/goja"
 )
@@ -15,56 +18,221 @@ type ExecuteOpts struct {
 	Values      map[string]interface{}
 	Namespace   string
 	ReleaseName string
+	// SourceDir is the project directory; source positions in errors are
+	// shown relative to it.
+	SourceDir string
+	// Timeout aborts scripts that run longer, e.g. an endless loop. Zero
+	// means no limit.
+	Timeout time.Duration
 }
 
+// Result is a rendered release.
+type Result struct {
+	Resources []Resource
+	// Origins[i] is where Resources[i] was registered: the innermost call in
+	// the user's own files (not in imported packages). Nil when unknown.
+	Origins []*diag.Frame
+}
+
+// Origin returns where resource i was registered, or nil.
+func (r *Result) Origin(i int) *diag.Frame {
+	if i < len(r.Origins) {
+		return r.Origins[i]
+	}
+	return nil
+}
+
+// Execute runs a bundle and returns the registered resources.
 func Execute(opts ExecuteOpts) ([]Resource, error) {
+	result, err := Render(opts)
+	if err != nil {
+		return nil, err
+	}
+	return result.Resources, nil
+}
+
+// Render runs a bundle and returns the registered resources together with
+// their source origins. Errors are diag.List values with .ct positions.
+func Render(opts ExecuteOpts) (*Result, error) {
 	vm := goja.New()
+	origins := injectGlobals(vm, opts)
 
-	injectGlobals(vm, opts.Values, opts.ReleaseName, opts.Namespace)
+	prg, err := goja.Compile(bundleName, opts.JSCode, false)
+	if err != nil {
+		return nil, diag.Errorf(diag.CodeSyntax, "compiling bundle: %v", err)
+	}
 
-	if _, err := vm.RunString(opts.JSCode); err != nil {
-		return nil, fmt.Errorf("JS execution error: %w", err)
+	if opts.Timeout > 0 {
+		timer := time.AfterFunc(opts.Timeout, func() { vm.Interrupt(opts.Timeout) })
+		defer timer.Stop()
+	}
+
+	if _, err := vm.RunProgram(prg); err != nil {
+		return nil, runtimeDiagnostics(err, opts.SourceDir)
 	}
 
 	resources, err := extractResources(vm)
 	if err != nil {
-		return nil, fmt.Errorf("failed to extract resources: %w", err)
+		return nil, diag.Errorf(diag.CodeInvalidResource, "%v", err)
+	}
+
+	result := &Result{Resources: resources}
+	if len(*origins) == len(resources) {
+		result.Origins = *origins
 	}
 
 	manifest.Normalize(resources, opts.Namespace)
-	if err := checkDuplicates(resources); err != nil {
+	if err := checkDuplicates(result); err != nil {
 		return nil, err
 	}
-	return resources, nil
+	return result, nil
 }
 
-func checkDuplicates(resources []Resource) error {
-	dups := manifest.FindDuplicates(resources)
+const bundleName = "ct-bundle.js"
+
+func checkDuplicates(result *Result) error {
+	dups := manifest.FindDuplicates(result.Resources)
 	if len(dups) == 0 {
 		return nil
 	}
-	msgs := make([]string, len(dups))
-	for i, d := range dups {
-		positions := make([]string, len(d.Indexes))
-		for j, idx := range d.Indexes {
-			positions[j] = fmt.Sprintf("#%d", idx+1)
+	list := make(diag.List, 0, len(dups))
+	for _, d := range dups {
+		var where []string
+		for _, idx := range d.Indexes {
+			if o := result.Origin(idx); o != nil {
+				where = append(where, fmt.Sprintf("%s:%d:%d", o.File, o.Line, o.Column))
+			} else {
+				where = append(where, fmt.Sprintf("resource #%d", idx+1))
+			}
 		}
-		msgs[i] = fmt.Sprintf("%s is registered %d times (resources %s)", d.Ref, len(d.Indexes), strings.Join(positions, ", "))
+		list = append(list, diag.Diagnostic{
+			Code:     diag.CodeDuplicate,
+			Message:  fmt.Sprintf("registered %d times (%s)", len(d.Indexes), strings.Join(where, ", ")),
+			Resource: d.Ref,
+			Hint:     "each object must be registered once; give the copies different names or namespaces, or register it in one place",
+		}.At(result.Origin(d.Indexes[len(d.Indexes)-1])))
 	}
-	return fmt.Errorf("duplicate resources: %s", strings.Join(msgs, "; "))
+	return list
 }
 
-func injectGlobals(vm *goja.Runtime, values map[string]interface{}, releaseName, namespace string) {
+func injectGlobals(vm *goja.Runtime, opts ExecuteOpts) *[]*diag.Frame {
 	h := NewJSHelper(vm)
 	h.DefineArray("__ct_resources")
+	values := opts.Values
 	if values == nil {
 		values = map[string]interface{}{}
 	}
 	h.DefineValue("Values", values)
 	h.DefineValue("Release", map[string]interface{}{
-		"name":      releaseName,
-		"namespace": namespace,
+		"name":      opts.ReleaseName,
+		"namespace": opts.Namespace,
 	})
+	return trackRegistrations(vm, opts.SourceDir)
+}
+
+// trackRegistrations wraps __ct_resources.push to remember which line of the
+// user's code registered each object, so later errors can point there.
+func trackRegistrations(vm *goja.Runtime, sourceDir string) *[]*diag.Frame {
+	origins := &[]*diag.Frame{}
+	arr := vm.Get("__ct_resources").ToObject(vm)
+	arrayPush, ok := goja.AssertFunction(vm.Get("Array").ToObject(vm).Get("prototype").ToObject(vm).Get("push"))
+	if !ok {
+		return origins
+	}
+	_ = arr.DefineDataProperty("push", vm.ToValue(func(call goja.FunctionCall) goja.Value {
+		origin := registrationOrigin(vm.CaptureCallStack(0, nil), sourceDir)
+		for range call.Arguments {
+			*origins = append(*origins, origin)
+		}
+		res, err := arrayPush(call.This, call.Arguments...)
+		if err != nil {
+			panic(err)
+		}
+		return res
+	}), goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	return origins
+}
+
+func registrationOrigin(stack []goja.StackFrame, sourceDir string) *diag.Frame {
+	return userFrame(sourceFrames(stack, sourceDir))
+}
+
+// sourceFrames converts goja frames (already mapped through the bundle's
+// source map) to diag frames, dropping native and bundle-wrapper frames.
+func sourceFrames(stack []goja.StackFrame, sourceDir string) []diag.Frame {
+	var frames []diag.Frame
+	for _, f := range stack {
+		pos := f.Position()
+		if pos.Filename == "" || pos.Filename == bundleName || pos.Line == 0 {
+			continue
+		}
+		fn := f.FuncName()
+		if fn == "<anonymous>" {
+			fn = ""
+		}
+		frames = append(frames, diag.Frame{
+			File:     DisplayPath(pos.Filename, sourceDir),
+			Line:     pos.Line,
+			Column:   pos.Column,
+			Function: fn,
+		})
+	}
+	return frames
+}
+
+// isPackagePath reports whether a display path points into an imported
+// package (DisplayPath renders those as host/owner/repo@version/...).
+func isPackagePath(p string) bool {
+	host, _, _ := strings.Cut(p, "/")
+	return strings.Contains(host, ".") && strings.Contains(p, "@")
+}
+
+func runtimeDiagnostics(err error, sourceDir string) error {
+	var interrupted *goja.InterruptedError
+	if errors.As(err, &interrupted) {
+		d := diag.Diagnostic{
+			Code:    diag.CodeTimeout,
+			Message: fmt.Sprintf("rendering did not finish within %v", interrupted.Value()),
+			Hint:    "look for an endless loop or recursion around the frames below",
+			Stack:   sourceFrames(interrupted.Stack(), sourceDir),
+		}
+		return diag.List{d.At(userFrame(d.Stack))}
+	}
+
+	var ex *goja.Exception
+	if errors.As(err, &ex) {
+		d := diag.Diagnostic{
+			Code:    diag.CodeRuntime,
+			Message: exceptionMessage(ex),
+			Stack:   sourceFrames(ex.Stack(), sourceDir),
+		}
+		if strings.Contains(d.Message, "of undefined") || strings.Contains(d.Message, "of null") {
+			d.Hint = "something on that line is undefined; missing Values keys are a common cause: add them to values.json/values.yaml or pass --set, and use ?. for optional ones"
+		}
+		return diag.List{d.At(userFrame(d.Stack))}
+	}
+	return diag.Errorf(diag.CodeRuntime, "%v", err)
+}
+
+// userFrame is the innermost frame in the user's own files, or the innermost
+// frame when the whole stack is inside packages.
+func userFrame(frames []diag.Frame) *diag.Frame {
+	for i := range frames {
+		if !isPackagePath(frames[i].File) {
+			return &frames[i]
+		}
+	}
+	if len(frames) > 0 {
+		return &frames[0]
+	}
+	return nil
+}
+
+func exceptionMessage(ex *goja.Exception) string {
+	if v := ex.Value(); v != nil {
+		return v.String()
+	}
+	return ex.Error()
 }
 
 func extractResources(vm *goja.Runtime) ([]Resource, error) {

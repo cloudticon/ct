@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -24,7 +26,9 @@ func writeProject(t *testing.T, mainCt string, files map[string]string) string {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(mainCt), 0o644))
 	for name, body := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 	}
 	return dir
 }
@@ -278,7 +282,14 @@ for (const i of [1, 2]) {
 
 	_, _, err := runTemplateE2E(t, "demo", dir, "-n", "prod")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `ConfigMap "cfg" (namespace "prod") is registered 2 times`)
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 1)
+	assert.Equal(t, diag.CodeDuplicate, list[0].Code)
+	assert.Equal(t, `ConfigMap "cfg" (namespace "prod")`, list[0].Resource)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 3, list[0].Line, "points at the push inside the loop")
+	assert.Contains(t, list[0].Message, "registered 2 times")
 }
 
 func TestTemplateE2E_YAMLUsesTwoSpaceIndent(t *testing.T) {
@@ -354,13 +365,60 @@ this is not valid javascript {{{ syntax error
 `, nil)
 
 	_, _, err := runTemplateE2E(t, "demo", dir)
-	require.Error(t, err)
-	// Either esbuild rejects the syntax or goja fails — either is fine,
-	// but the error must surface to the caller.
-	assert.True(t,
-		strings.Contains(err.Error(), "bundle failed") ||
-			strings.Contains(err.Error(), "JS execution error"),
-		"error should describe bundle/exec failure, got: %v", err)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeSyntax, list[0].Code)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 2, list[0].Line)
+	assert.Contains(t, list[0].LineText, "this is not valid javascript")
+}
+
+func TestTemplateE2E_RuntimeErrorPointsAtCtSource(t *testing.T) {
+	dir := writeProject(t, `import { make } from "./lib/factory";
+
+make({ name: "ok" });
+make({ name: "" });
+`, map[string]string{
+		"lib/factory.ct": `export function make(opts: { name: string }) {
+  if (!opts.name) {
+    throw new Error("name is required");
+  }
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: opts.name } });
+}
+`,
+	})
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	d := list[0]
+	assert.Equal(t, diag.CodeRuntime, d.Code)
+	assert.Contains(t, d.Message, "name is required")
+	assert.Equal(t, "lib/factory.ct", d.File)
+	assert.Equal(t, 3, d.Line)
+	require.GreaterOrEqual(t, len(d.Stack), 2)
+	assert.Equal(t, "main.ct", d.Stack[1].File)
+	assert.Equal(t, 4, d.Stack[1].Line, "the failing call site in main.ct")
+}
+
+func TestTemplateE2E_TimesOutEndlessLoops(t *testing.T) {
+	old := renderTimeout
+	renderTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { renderTimeout = old })
+	dir := writeProject(t, `
+let i = 0;
+while (true) { i++; }
+`, nil)
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeTimeout, list[0].Code)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 3, list[0].Line)
 }
 
 func TestTemplateE2E_RejectsUnsupportedOutputFormat(t *testing.T) {

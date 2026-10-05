@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/cloudticon/ct/internal/output"
 	"github.com/cloudticon/ct/pkg/engine"
@@ -81,7 +82,11 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 		return nil, fmt.Errorf("entry point not found: %s", entryPoint)
 	}
 
-	tr := engine.NewTranspiler(dir)
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving project directory: %w", err)
+	}
+	tr := engine.NewTranspiler(absDir)
 
 	values, err := engine.LoadValues(engine.ValuesOpts{
 		Files:     resolveValuesFiles(dir, opts.valuesFiles),
@@ -94,21 +99,28 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 
 	jsCode, err := tr.Bundle(entryPoint)
 	if err != nil {
-		return nil, fmt.Errorf("bundle failed: %w", err)
+		return nil, err
 	}
 
-	resources, err := engine.Execute(engine.ExecuteOpts{
+	result, err := engine.Render(engine.ExecuteOpts{
 		JSCode:      jsCode,
 		Values:      values,
 		Namespace:   opts.namespace,
 		ReleaseName: opts.releaseName,
+		SourceDir:   absDir,
+		Timeout:     renderTimeout,
 	})
 	if err != nil {
 		return nil, err
 	}
+	resources := result.Resources
 	manifest.SortForApply(resources)
 	return resources, nil
 }
+
+// renderTimeout stops runaway .ct programs (endless loops) with a stack trace
+// instead of hanging the CLI.
+var renderTimeout = time.Minute
 
 // resolveValuesFiles returns the values files for a render. Explicit files
 // are used as given, falling back to the project directory, so
