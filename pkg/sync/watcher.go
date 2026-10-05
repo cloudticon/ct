@@ -237,8 +237,15 @@ func (w *Watcher) fsnotifyLoop(ctx context.Context, fw *fsnotify.Watcher, out ch
 				return
 			}
 
-			isDir := pathExistsAndIsDir(event.Name)
-			if w.isExcluded(event.Name, isDir) {
+			info, statErr := os.Stat(event.Name)
+			isDir := statErr == nil && info.IsDir()
+			excluded := w.isExcluded(event.Name, isDir)
+			if statErr != nil {
+				// Gone (deleted or renamed away): its type is unknown, and a
+				// deleted excluded directory must not be deleted remotely.
+				excluded = excluded || w.isExcluded(event.Name, true)
+			}
+			if excluded {
 				continue
 			}
 
@@ -386,11 +393,6 @@ func (w *Watcher) rel(path string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-func pathExistsAndIsDir(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
 func (w *Watcher) isExcluded(path string, isDir bool) bool {
 	rel, err := filepath.Rel(w.root, path)
 	if err != nil {
@@ -449,7 +451,20 @@ func newPathExcluder(patterns []string) (*pathExcluder, error) {
 	return &pathExcluder{rules: rules}, nil
 }
 
+// IsExcluded reports whether rel (slash-separated, relative to the sync
+// root) is excluded. As in gitignore, everything below an excluded directory
+// is excluded too and cannot be re-included.
 func (e *pathExcluder) IsExcluded(rel string, isDir bool) bool {
+	rel = filepath.ToSlash(rel)
+	for i := 0; i < len(rel); i++ {
+		if rel[i] == '/' && e.excludes(rel[:i], true) {
+			return true
+		}
+	}
+	return e.excludes(rel, isDir)
+}
+
+func (e *pathExcluder) excludes(rel string, isDir bool) bool {
 	excluded := false
 	for _, rule := range e.rules {
 		if rule.matches(rel, isDir) {
@@ -460,13 +475,10 @@ func (e *pathExcluder) IsExcluded(rel string, isDir bool) bool {
 }
 
 func (r excludeRule) matches(rel string, isDir bool) bool {
-	rel = filepath.ToSlash(rel)
 	if r.dirOnly && !isDir {
-		// For dir-only rules support descendants too.
-		return strings.HasPrefix(rel+"/", r.pattern+"/")
-	}
-	if r.dirOnly && isDir && strings.HasPrefix(rel+"/", r.pattern+"/") {
-		return true
+		// "build/" matches directories only; their content is covered by
+		// the ancestor check in IsExcluded.
+		return false
 	}
 
 	if r.anchored {

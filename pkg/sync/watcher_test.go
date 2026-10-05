@@ -174,3 +174,54 @@ func TestWatcherFsnotify_ReportsFilesInsideNewDirectory(t *testing.T) {
 	_, excluded := seen["pkg/skip.tmp"]
 	assert.False(t, excluded, "excluded files must not be reported")
 }
+
+func TestPathExcluder_DirOnlyRulesAndDescendants(t *testing.T) {
+	excluder, err := newPathExcluder([]string{"build/", "node_modules", "/dist"})
+	require.NoError(t, err)
+
+	assert.True(t, excluder.IsExcluded("build", true))
+	assert.True(t, excluder.IsExcluded("src/build", true), "dir-only rules without a slash match at any depth")
+	assert.True(t, excluder.IsExcluded("src/build/out.js", false), "everything below an excluded directory is excluded")
+	assert.True(t, excluder.IsExcluded("packages/a/node_modules/x/index.js", false))
+	assert.True(t, excluder.IsExcluded("dist/app.js", false))
+	assert.False(t, excluder.IsExcluded("src/dist/app.js", false), "anchored rules only match at the root")
+	assert.False(t, excluder.IsExcluded("src/builder.go", false))
+}
+
+// Deleting an excluded directory locally must not delete it in the
+// container: it was excluded precisely so the container keeps its own copy
+// (build output, dependencies, ...).
+func TestWatcherFsnotify_IgnoresDeletionOfExcludedDirectory(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "src", "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "src", "build", "out.js"), []byte("x"), 0o644))
+
+	w, err := NewWatcher(root, []string{"build/"}, false)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ch, err := w.Watch(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(root, "src", "build")))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "src", "marker.txt"), []byte("m"), 0o644))
+
+	var seen []FileChange
+	for {
+		batch := waitBatch(t, ch)
+		seen = append(seen, batch...)
+		if containsPath(seen, "src/marker.txt") {
+			break
+		}
+	}
+	assert.False(t, containsPath(seen, "src/build"), "deleting an excluded directory must not be synced: %v", seen)
+}
+
+func containsPath(changes []FileChange, path string) bool {
+	for _, c := range changes {
+		if c.Path == path {
+			return true
+		}
+	}
+	return false
+}
