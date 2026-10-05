@@ -117,11 +117,13 @@ func TestSyncerRun_RequiresExec(t *testing.T) {
 
 func TestSyncerRunWithReady_StillSignalsReadyOnValidationError(t *testing.T) {
 	s := NewSyncer(nil, "demo", nil, SyncRule{From: ".", To: "/app"})
+	var readyErr error
 	readyCalled := false
-	err := s.RunWithReady(context.Background(), func() { readyCalled = true })
+	err := s.RunWithReady(context.Background(), func(err error) { readyCalled, readyErr = true, err })
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "k8s client is required")
 	assert.True(t, readyCalled, "ready must be called even on validation error")
+	assert.Equal(t, err, readyErr, "ready must report the failure")
 }
 
 func TestSyncerRunWithReady_PropagatesWaitError(t *testing.T) {
@@ -177,14 +179,15 @@ func TestSyncerRunWithReady_SignalsAfterInitialSync(t *testing.T) {
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
-	readyCh := make(chan struct{})
+	readyCh := make(chan error, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- s.RunWithReady(ctx, func() { close(readyCh) })
+		done <- s.RunWithReady(ctx, func(err error) { readyCh <- err })
 	}()
 
 	select {
-	case <-readyCh:
+	case err := <-readyCh:
+		require.NoError(t, err, "a successful initial sync reports nil")
 	case <-time.After(2 * time.Second):
 		t.Fatal("ready callback was not called after initial sync")
 	}

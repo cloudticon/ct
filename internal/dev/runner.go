@@ -132,17 +132,25 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 	var wg sync.WaitGroup
 	errCh := make(chan error, 1)
 
+	// fail records the first feature failure and stops the session. Errors
+	// returned after the session was asked to stop are consequences of the
+	// cancellation, not failures of their own.
+	fail := func(err error) {
+		if err == nil || errors.Is(err, context.Canceled) || featuresCtx.Err() != nil {
+			return
+		}
+		select {
+		case errCh <- err:
+		default:
+		}
+		cancel()
+	}
+
 	startFeature := func(fn func(context.Context) error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := fn(featuresCtx); err != nil && !errors.Is(err, context.Canceled) {
-				select {
-				case errCh <- err:
-				default:
-				}
-				cancel()
-			}
+			fail(fn(featuresCtx))
 		}()
 	}
 
@@ -171,7 +179,12 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 					Polling:   rule.Polling,
 					Container: target.Container,
 				})
-				return syncer.RunWithReady(gctx, syncWg.Done)
+				return syncer.RunWithReady(gctx, func(err error) {
+					// Record a failure before releasing the waiter so it can
+					// never mistake a failed initial sync for a completed one.
+					fail(err)
+					syncWg.Done()
+				})
 			})
 		}
 
@@ -189,18 +202,15 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 		}
 	}
 
+	// waitFeatures blocks until every feature returned and reports the first
+	// failure. (Selecting on errCh and a "done" channel instead would pick
+	// at random when both are ready and could drop the error.)
 	waitFeatures := func() error {
-		done := make(chan struct{})
-		go func() {
-			wg.Wait()
-			close(done)
-		}()
-
+		wg.Wait()
 		select {
 		case err := <-errCh:
-			<-done
 			return err
-		case <-done:
+		default:
 			return nil
 		}
 	}
@@ -215,12 +225,15 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 		sp := startSpinner("waiting for initial sync...")
 		select {
 		case <-syncReady:
-			sp.Success("initial sync complete")
 		case <-featuresCtx.Done():
+		}
+		// A failed sync cancels featuresCtx before it marks itself ready.
+		if featuresCtx.Err() != nil {
 			sp.Fail("sync interrupted")
 			cancel()
 			return waitFeatures()
 		}
+		sp.Success("initial sync complete")
 	}
 
 	if hasTerminal {

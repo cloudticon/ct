@@ -36,6 +36,7 @@ type devCluster struct {
 	WatchPodFn    func(ctx context.Context, ns, pod string) error
 	ExecFn        func(ctx context.Context, ns string, sel k8s.Selector, opts k8s.ExecOpts) error
 	WaitPodFn     func(ctx context.Context, ns string, sel k8s.Selector) (string, error)
+	ExecPodFn     func(ctx context.Context, ns, pod string, opts k8s.ExecOpts) error
 
 	portCalls     []string
 	logCalls      []string
@@ -101,6 +102,9 @@ func (d *devCluster) ExecPod(ctx context.Context, ns, pod string, opts k8s.ExecO
 		d.syncCalls = append(d.syncCalls, "tar")
 	}
 	d.mu.Unlock()
+	if d.ExecPodFn != nil {
+		return d.ExecPodFn(ctx, ns, pod, opts)
+	}
 	return nil
 }
 
@@ -727,3 +731,69 @@ func TestStartDevFeatures_TerminalAndSyncUseTargetContainer(t *testing.T) {
 	assert.Contains(t, commands, "tar", "initial sync should have run")
 	assert.Contains(t, commands, "/bin/sh", "terminal should have run")
 }
+
+// slowUnwrapError delays anyone walking the error chain (errors.Is/As). It
+// widens the window between a feature returning an error and the session
+// reacting to it, which makes ordering bugs deterministic.
+type slowUnwrapError struct{ msg string }
+
+func (e slowUnwrapError) Error() string { return e.msg }
+func (e slowUnwrapError) Unwrap() error {
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
+// A failed initial sync used to signal "ready" before the failure was
+// reported, so the session printed "initial sync complete" and started the
+// terminal on top of a failed sync.
+func TestStartDevFeatures_FailedInitialSyncDoesNotStartTerminal(t *testing.T) {
+	silenceDevLog(t)
+	var successes []string
+	var mu sync.Mutex
+	startSpinner = func(string) progressSpinner {
+		return recordingSpinner{onSuccess: func(msg string) {
+			mu.Lock()
+			successes = append(successes, msg)
+			mu.Unlock()
+		}}
+	}
+
+	dc := newDevCluster()
+	dc.ExecPodFn = func(_ context.Context, _ string, _ string, opts k8s.ExecOpts) error {
+		if opts.Command[0] == "tar" {
+			return slowUnwrapError{msg: "command terminated with exit code 2"}
+		}
+		return nil
+	}
+	dc.ExecFn = func(ctx context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o644))
+	targets := []Target{{
+		Name: "web", Selector: map[string]string{"app": "web"},
+		Sync:     []SyncRule{{From: src, To: "/app"}},
+		Terminal: "bash",
+	}}
+
+	err := startDevFeatures(context.Background(), dc, "ns", targets, &bytes.Buffer{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "initial sync failed")
+	assert.Equal(t, 0, dc.TerminalCalls(), "terminal must not start when the initial sync failed")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.NotContains(t, successes, "initial sync complete")
+}
+
+type recordingSpinner struct{ onSuccess func(string) }
+
+func (r recordingSpinner) Success(args ...any) {
+	if len(args) > 0 {
+		if s, ok := args[0].(string); ok {
+			r.onSuccess(s)
+		}
+	}
+}
+func (recordingSpinner) Fail(_ ...any) {}

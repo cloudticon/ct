@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	stdsync "sync"
 
 	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/fatih/color"
@@ -53,17 +52,34 @@ func (s *Syncer) Run(ctx context.Context) error {
 	return s.RunWithReady(ctx, nil)
 }
 
-// RunWithReady is like Run but calls ready after the initial sync completes.
-// The ready callback is guaranteed to be called exactly once before returning,
-// even if an error occurs during initial sync.
-func (s *Syncer) RunWithReady(ctx context.Context, ready func()) error {
-	signalReady := func() {}
-	if ready != nil {
-		var once stdsync.Once
-		signalReady = func() { once.Do(ready) }
-		defer signalReady()
+// RunWithReady is like Run but reports the outcome of the initial sync. ready
+// is called exactly once: with nil as soon as the initial sync completed, or
+// with the error that prevented it (before RunWithReady returns that error).
+// Callers can therefore tell "synced" from "failed" without racing the
+// returned error.
+func (s *Syncer) RunWithReady(ctx context.Context, ready func(error)) error {
+	signalled := false
+	err := s.run(ctx, func() {
+		signalled = true
+		if ready != nil {
+			ready(nil)
+		}
+	})
+	if !signalled {
+		if err == nil {
+			err = errors.New("sync stopped before the initial sync completed")
+		}
+		if ready != nil {
+			ready(err)
+		}
 	}
+	if err != nil && errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
 
+func (s *Syncer) run(ctx context.Context, signalReady func()) error {
 	if s.exec == nil {
 		return errors.New("k8s client is required")
 	}
