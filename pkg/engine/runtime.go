@@ -57,6 +57,9 @@ func Execute(opts ExecuteOpts) ([]Resource, error) {
 // their source origins. Errors are diag.List values with .ct positions.
 func Render(opts ExecuteOpts) (*Result, error) {
 	vm := goja.New()
+	// Endless recursion fails fast with a RangeError and a short stack
+	// instead of growing until the timeout.
+	vm.SetMaxCallStackSize(maxCallStackSize)
 	origins := injectGlobals(vm, opts)
 
 	prg, err := goja.Compile(bundleName, opts.JSCode, false)
@@ -90,7 +93,19 @@ func Render(opts ExecuteOpts) (*Result, error) {
 	return result, nil
 }
 
-const bundleName = "ct-bundle.js"
+const (
+	bundleName       = "ct-bundle.js"
+	maxCallStackSize = 10000
+	// maxStackFrames bounds the stack shown in a diagnostic.
+	maxStackFrames = 20
+)
+
+func capFrames(frames []diag.Frame) []diag.Frame {
+	if len(frames) > maxStackFrames {
+		return frames[:maxStackFrames]
+	}
+	return frames
+}
 
 func checkDuplicates(result *Result) error {
 	dups := manifest.FindDuplicates(result.Resources)
@@ -142,7 +157,7 @@ func trackRegistrations(vm *goja.Runtime, sourceDir string) *[][]diag.Frame {
 		return origins
 	}
 	_ = arr.DefineDataProperty("push", vm.ToValue(func(call goja.FunctionCall) goja.Value {
-		origin := userChain(sourceFrames(vm.CaptureCallStack(0, nil), sourceDir))
+		origin := capFrames(userChain(sourceFrames(vm.CaptureCallStack(0, nil), sourceDir)))
 		for range call.Arguments {
 			*origins = append(*origins, origin)
 		}
@@ -215,26 +230,40 @@ func isProjectPath(p string) bool {
 func runtimeDiagnostics(err error, sourceDir string) error {
 	var interrupted *goja.InterruptedError
 	if errors.As(err, &interrupted) {
+		frames := sourceFrames(interrupted.Stack(), sourceDir)
 		d := diag.Diagnostic{
 			Code:    diag.CodeTimeout,
 			Message: fmt.Sprintf("rendering did not finish within %v", interrupted.Value()),
 			Hint:    "look for an endless loop or recursion around the frames below",
-			Stack:   sourceFrames(interrupted.Stack(), sourceDir),
+			Stack:   capFrames(frames),
 		}
-		return diag.List{d.At(userFrame(d.Stack))}
+		return diag.List{d.At(userFrame(frames))}
+	}
+
+	var overflow *goja.StackOverflowError
+	if errors.As(err, &overflow) {
+		frames := sourceFrames(overflow.Stack(), sourceDir)
+		d := diag.Diagnostic{
+			Code:    diag.CodeRuntime,
+			Message: "Maximum call stack size exceeded",
+			Hint:    "a function calls itself without end; check the recursion around the frames below",
+			Stack:   capFrames(frames),
+		}
+		return diag.List{d.At(userFrame(frames))}
 	}
 
 	var ex *goja.Exception
 	if errors.As(err, &ex) {
+		frames := sourceFrames(ex.Stack(), sourceDir)
 		d := diag.Diagnostic{
 			Code:    diag.CodeRuntime,
 			Message: exceptionMessage(ex),
-			Stack:   sourceFrames(ex.Stack(), sourceDir),
+			Stack:   capFrames(frames),
 		}
 		if strings.Contains(d.Message, "of undefined") || strings.Contains(d.Message, "of null") {
 			d.Hint = "something on that line is undefined; missing Values keys are a common cause: add them to values.json/values.yaml or pass --set, and use ?. for optional ones"
 		}
-		return diag.List{d.At(userFrame(d.Stack))}
+		return diag.List{d.At(userFrame(frames))}
 	}
 	return diag.Errorf(diag.CodeRuntime, "%v", err)
 }
@@ -248,7 +277,14 @@ func userFrame(frames []diag.Frame) *diag.Frame {
 	return nil
 }
 
-func exceptionMessage(ex *goja.Exception) string {
+func exceptionMessage(ex *goja.Exception) (msg string) {
+	// Converting some thrown values to a string throws again (e.g.
+	// Object.create(null) has no toString); don't let that crash ct.
+	defer func() {
+		if recover() != nil {
+			msg = "uncaught exception (the thrown value has no message)"
+		}
+	}()
 	if v := ex.Value(); v != nil {
 		return v.String()
 	}

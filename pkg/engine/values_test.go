@@ -226,6 +226,7 @@ func TestLoadValues_SetKeepsNonCanonicalNumbersAsStrings(t *testing.T) {
 	values, err := engine.LoadValues(engine.ValuesOpts{Set: []string{
 		"tag=1.10", "minor=1.0", "zip=0123", "exp=1e3", "plus=+1",
 		"int=42", "neg=-7", "float=0.5", "on=true", "off=false", "nothing=null",
+		"nan=NaN", "inf=+Inf", "ninf=-Inf",
 	}})
 	require.NoError(t, err)
 	assert.Equal(t, "1.10", values["tag"])
@@ -233,6 +234,9 @@ func TestLoadValues_SetKeepsNonCanonicalNumbersAsStrings(t *testing.T) {
 	assert.Equal(t, "0123", values["zip"])
 	assert.Equal(t, "1e3", values["exp"])
 	assert.Equal(t, "+1", values["plus"])
+	assert.Equal(t, "NaN", values["nan"], "NaN and infinities can't be rendered as JSON numbers")
+	assert.Equal(t, "+Inf", values["inf"])
+	assert.Equal(t, "-Inf", values["ninf"])
 	assert.Equal(t, int64(42), values["int"])
 	assert.Equal(t, int64(-7), values["neg"])
 	assert.Equal(t, 0.5, values["float"])

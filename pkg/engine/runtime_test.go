@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/cloudticon/ct/pkg/engine"
@@ -270,4 +271,26 @@ func TestExecute_RejectsCyclicObjects(t *testing.T) {
 	_, err := engine.Execute(engine.ExecuteOpts{JSCode: js})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reference to itself")
+}
+
+func TestRender_EndlessRecursionFailsFastWithShortStack(t *testing.T) {
+	_, err := engine.Render(engine.ExecuteOpts{
+		JSCode:  `function f(n) { return f(n + 1); } f(0);`,
+		Timeout: 30 * time.Second,
+	})
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeRuntime, list[0].Code)
+	assert.Contains(t, list[0].Message, "Maximum call stack size exceeded")
+	assert.LessOrEqual(t, len(list[0].Stack), 20)
+	assert.Less(t, len(list.Error()), 10_000)
+}
+
+func TestRender_ThrowingAValueWithoutToStringDoesNotPanic(t *testing.T) {
+	_, err := engine.Render(engine.ExecuteOpts{JSCode: `throw Object.create(null);`})
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeRuntime, list[0].Code)
 }
