@@ -235,3 +235,39 @@ func TestUserChain_PrefersProjectFrames(t *testing.T) {
 	assert.Equal(t, frames[:1], engine.UserChain(frames[:1]), "packages only: innermost frame")
 	assert.Nil(t, engine.UserChain(nil))
 }
+
+func TestExecute_SharedObjectsAreCopied(t *testing.T) {
+	// One metadata object used by a cluster-scoped and a namespaced kind:
+	// defaulting the Role's namespace must not leak into the ClusterRole.
+	js := `
+		const meta = { name: "reader" };
+		globalThis.__ct_resources.push({ apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: meta });
+		globalThis.__ct_resources.push({ apiVersion: "rbac.authorization.k8s.io/v1", kind: "Role", metadata: meta });
+	`
+	resources, err := engine.Execute(engine.ExecuteOpts{JSCode: js, Namespace: "prod"})
+	require.NoError(t, err)
+
+	assert.NotContains(t, resources[0]["metadata"], "namespace")
+	assert.Equal(t, "prod", resources[1]["metadata"].(map[string]interface{})["namespace"])
+}
+
+func TestExecute_ValuesAreNotMutated(t *testing.T) {
+	values := map[string]interface{}{"labels": map[string]interface{}{"team": "a", "gone": nil}}
+	js := `globalThis.__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "c", labels: Values.labels } });`
+
+	_, err := engine.Execute(engine.ExecuteOpts{JSCode: js, Values: values})
+	require.NoError(t, err)
+
+	assert.Contains(t, values["labels"], "gone", "cleaning a rendered object must not touch Values")
+}
+
+func TestExecute_RejectsCyclicObjects(t *testing.T) {
+	js := `
+		const o = { apiVersion: "v1", kind: "ConfigMap", metadata: { name: "c" } };
+		o.self = o;
+		globalThis.__ct_resources.push(o);
+	`
+	_, err := engine.Execute(engine.ExecuteOpts{JSCode: js})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reference to itself")
+}

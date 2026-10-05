@@ -193,6 +193,10 @@ func FindDuplicates(resources []Resource) []Duplicate {
 	dupAt := map[string]int{}
 	var dups []Duplicate
 	for i, res := range resources {
+		meta, _ := res["metadata"].(map[string]interface{})
+		if name, _ := meta["name"].(string); name == "" {
+			continue // nameless objects (generateName) are reported by validation
+		}
 		key := identity(res)
 		f, ok := first[key]
 		if !ok {
@@ -260,11 +264,22 @@ var installRank = func() map[string]int {
 	return rank
 }()
 
-// InstallRank is a kind's position in Helm's install order; false for kinds
-// Helm doesn't know (custom resources).
-func InstallRank(kind string) (int, bool) {
+// InstallRank is an object's position in Helm's install order; false for
+// kinds Helm doesn't know. Only Kubernetes' own API groups count, so a custom
+// resource that reuses a built-in kind name (Calico's NetworkPolicy) is
+// treated as a custom resource and still goes after its CRD.
+func InstallRank(apiVersion, kind string) (int, bool) {
+	if !isKubernetesGroup(Group(apiVersion)) {
+		return 0, false
+	}
 	rank, ok := installRank[kind]
 	return rank, ok
+}
+
+// isKubernetesGroup reports API groups defined by Kubernetes itself: the
+// core group, dotless groups (apps, batch, policy, ...) and *.k8s.io.
+func isKubernetesGroup(group string) bool {
+	return group == "" || !strings.Contains(group, ".") || strings.HasSuffix(group, ".k8s.io")
 }
 
 // SortForApply orders resources the way Helm installs them. Kinds Helm
@@ -272,10 +287,12 @@ func InstallRank(kind string) (int, bool) {
 // the same kind keep their registration order.
 func SortForApply(resources []Resource) {
 	sort.SliceStable(resources, func(i, j int) bool {
+		ai, _ := resources[i]["apiVersion"].(string)
+		aj, _ := resources[j]["apiVersion"].(string)
 		ki, _ := resources[i]["kind"].(string)
 		kj, _ := resources[j]["kind"].(string)
-		ri, iok := installRank[ki]
-		rj, jok := installRank[kj]
+		ri, iok := InstallRank(ai, ki)
+		rj, jok := InstallRank(aj, kj)
 		switch {
 		case iok && jok:
 			return ri < rj

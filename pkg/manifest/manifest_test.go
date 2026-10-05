@@ -175,3 +175,44 @@ func TestSortForApply_FollowsHelmInstallOrder(t *testing.T) {
 	assert.Equal(t, "second", resources[1]["metadata"].(map[string]interface{})["name"], "same kind keeps registration order")
 	assert.Equal(t, "third", resources[2]["metadata"].(map[string]interface{})["name"])
 }
+
+func TestFindDuplicates_IgnoresNamelessObjects(t *testing.T) {
+	a := obj("batch/v1", "Job", "", "prod")
+	a["metadata"].(map[string]interface{})["generateName"] = "migrate-"
+	b := obj("batch/v1", "Job", "", "prod")
+	b["metadata"].(map[string]interface{})["generateName"] = "seed-"
+
+	assert.Empty(t, manifest.FindDuplicates([]manifest.Resource{a, b}))
+}
+
+func TestSortForApply_CustomResourceWithBuiltinKindNameIsACustomResource(t *testing.T) {
+	resources := []manifest.Resource{
+		obj("crd.projectcalico.org/v1", "NetworkPolicy", "calico", ""),
+		obj("apiextensions.k8s.io/v1", "CustomResourceDefinition", "networkpolicies.crd.projectcalico.org", ""),
+		obj("networking.k8s.io/v1", "NetworkPolicy", "k8s", ""),
+	}
+
+	manifest.SortForApply(resources)
+
+	var names []string
+	for _, r := range resources {
+		names = append(names, r["metadata"].(map[string]interface{})["name"].(string))
+	}
+	assert.Equal(t, []string{"k8s", "networkpolicies.crd.projectcalico.org", "calico"}, names)
+}
+
+func TestInstallRank(t *testing.T) {
+	for _, tc := range []struct {
+		apiVersion, kind string
+		known            bool
+	}{
+		{"v1", "Namespace", true},
+		{"apps/v1", "Deployment", true},
+		{"networking.k8s.io/v1", "Ingress", true},
+		{"crd.projectcalico.org/v1", "NetworkPolicy", false},
+		{"example.com/v1", "Widget", false},
+	} {
+		_, ok := manifest.InstallRank(tc.apiVersion, tc.kind)
+		assert.Equal(t, tc.known, ok, "%s %s", tc.apiVersion, tc.kind)
+	}
+}

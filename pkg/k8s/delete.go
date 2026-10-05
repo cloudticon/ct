@@ -101,8 +101,8 @@ func orderForDelete(resources []ResourceRef) []ResourceRef {
 	// Undo the install order: custom resources first (while their CRD and
 	// controller still exist), then known kinds in reverse install order.
 	sort.SliceStable(regular, func(i, j int) bool {
-		ri, iok := manifest.InstallRank(regular[i].Kind)
-		rj, jok := manifest.InstallRank(regular[j].Kind)
+		ri, iok := manifest.InstallRank(regular[i].APIVersion, regular[i].Kind)
+		rj, jok := manifest.InstallRank(regular[j].APIVersion, regular[j].Kind)
 		if iok != jok {
 			return !iok
 		}

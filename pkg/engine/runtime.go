@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -272,8 +273,50 @@ func extractResources(vm *goja.Runtime) ([]Resource, error) {
 		if !ok {
 			return nil, fmt.Errorf("resource at index %d is not an object", i)
 		}
-		resources = append(resources, res)
+		// goja exports one JS object as one Go map wherever it appears, and
+		// Values maps are shared with the script. Copy, so normalizing one
+		// object (e.g. defaulting its namespace) can't leak into another.
+		copied, err := copyValue(res, map[uintptr]bool{})
+		if err != nil {
+			return nil, fmt.Errorf("resource at index %d: %w", i, err)
+		}
+		resources = append(resources, copied.(map[string]interface{}))
 	}
 
 	return resources, nil
+}
+
+// copyValue deep-copies maps and slices, rejecting cycles (which can't be
+// rendered as YAML/JSON anyway).
+func copyValue(v interface{}, onPath map[uintptr]bool) (interface{}, error) {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		id := reflect.ValueOf(val).Pointer()
+		if onPath[id] {
+			return nil, fmt.Errorf("object contains a reference to itself")
+		}
+		onPath[id] = true
+		defer delete(onPath, id)
+		out := make(map[string]interface{}, len(val))
+		for k, item := range val {
+			c, err := copyValue(item, onPath)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = c
+		}
+		return out, nil
+	case []interface{}:
+		out := make([]interface{}, len(val))
+		for i, item := range val {
+			c, err := copyValue(item, onPath)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = c
+		}
+		return out, nil
+	default:
+		return v, nil
+	}
 }
