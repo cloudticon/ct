@@ -33,7 +33,7 @@ func newApplyCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "target namespace for resources")
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: yaml or json (default: no output)")
-	addValuesFlags(cmd, &opts.templateOpts)
+	addRenderFlags(cmd, &opts.templateOpts)
 	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "skip cache, re-download remote source")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
 	cmd.Flags().BoolVar(&opts.createNamespace, "create-namespace", false, "create namespace if it does not exist")
@@ -46,6 +46,9 @@ func init() {
 }
 
 func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) error {
+	if err := validateReleaseName(releaseName); err != nil {
+		return err
+	}
 	resolvedDir, err := resolveSourceDirForApply(source, opts.noCache)
 	if err != nil {
 		return err

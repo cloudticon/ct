@@ -29,13 +29,13 @@ type ExecuteOpts struct {
 // Result is a rendered release.
 type Result struct {
 	Resources []Resource
-	// Origins[i] is where Resources[i] was registered: the innermost call in
-	// the user's own files (not in imported packages). Nil when unknown.
-	Origins []*diag.Frame
+	// Origins[i] is the call chain in the user's own files (innermost first,
+	// imported packages left out) that registered Resources[i].
+	Origins [][]diag.Frame
 }
 
-// Origin returns where resource i was registered, or nil.
-func (r *Result) Origin(i int) *diag.Frame {
+// Origin returns the call chain that registered resource i, or nil.
+func (r *Result) Origin(i int) []diag.Frame {
 	if i < len(r.Origins) {
 		return r.Origins[i]
 	}
@@ -100,22 +100,22 @@ func checkDuplicates(result *Result) error {
 		var where []string
 		for _, idx := range d.Indexes {
 			if o := result.Origin(idx); o != nil {
-				where = append(where, fmt.Sprintf("%s:%d:%d", o.File, o.Line, o.Column))
+				where = append(where, diag.Chain(o))
 			} else {
 				where = append(where, fmt.Sprintf("resource #%d", idx+1))
 			}
 		}
 		list = append(list, diag.Diagnostic{
 			Code:     diag.CodeDuplicate,
-			Message:  fmt.Sprintf("registered %d times (%s)", len(d.Indexes), strings.Join(where, ", ")),
+			Message:  fmt.Sprintf("registered %d times (%s)", len(d.Indexes), strings.Join(where, "; ")),
 			Resource: d.Ref,
 			Hint:     "each object must be registered once; give the copies different names or namespaces, or register it in one place",
-		}.At(result.Origin(d.Indexes[len(d.Indexes)-1])))
+		}.AtChain(result.Origin(d.Indexes[len(d.Indexes)-1])))
 	}
 	return list
 }
 
-func injectGlobals(vm *goja.Runtime, opts ExecuteOpts) *[]*diag.Frame {
+func injectGlobals(vm *goja.Runtime, opts ExecuteOpts) *[][]diag.Frame {
 	h := NewJSHelper(vm)
 	h.DefineArray("__ct_resources")
 	values := opts.Values
@@ -132,15 +132,15 @@ func injectGlobals(vm *goja.Runtime, opts ExecuteOpts) *[]*diag.Frame {
 
 // trackRegistrations wraps __ct_resources.push to remember which line of the
 // user's code registered each object, so later errors can point there.
-func trackRegistrations(vm *goja.Runtime, sourceDir string) *[]*diag.Frame {
-	origins := &[]*diag.Frame{}
+func trackRegistrations(vm *goja.Runtime, sourceDir string) *[][]diag.Frame {
+	origins := &[][]diag.Frame{}
 	arr := vm.Get("__ct_resources").ToObject(vm)
 	arrayPush, ok := goja.AssertFunction(vm.Get("Array").ToObject(vm).Get("prototype").ToObject(vm).Get("push"))
 	if !ok {
 		return origins
 	}
 	_ = arr.DefineDataProperty("push", vm.ToValue(func(call goja.FunctionCall) goja.Value {
-		origin := registrationOrigin(vm.CaptureCallStack(0, nil), sourceDir)
+		origin := userChain(sourceFrames(vm.CaptureCallStack(0, nil), sourceDir))
 		for range call.Arguments {
 			*origins = append(*origins, origin)
 		}
@@ -153,8 +153,19 @@ func trackRegistrations(vm *goja.Runtime, sourceDir string) *[]*diag.Frame {
 	return origins
 }
 
-func registrationOrigin(stack []goja.StackFrame, sourceDir string) *diag.Frame {
-	return userFrame(sourceFrames(stack, sourceDir))
+// userChain keeps the frames in the user's own files, innermost first. When
+// the whole stack is inside packages it keeps the innermost frame.
+func userChain(frames []diag.Frame) []diag.Frame {
+	var chain []diag.Frame
+	for _, f := range frames {
+		if !isPackagePath(f.File) {
+			chain = append(chain, f)
+		}
+	}
+	if len(chain) == 0 && len(frames) > 0 {
+		chain = frames[:1]
+	}
+	return chain
 }
 
 // sourceFrames converts goja frames (already mapped through the bundle's

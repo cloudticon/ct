@@ -71,6 +71,29 @@ func (d Diagnostic) At(f *Frame) Diagnostic {
 	return d
 }
 
+// AtChain sets the position from the first frame of a call chain (innermost
+// first) and keeps the callers as the stack, so a problem built inside a
+// helper still shows which call produced it.
+func (d Diagnostic) AtChain(chain []Frame) Diagnostic {
+	if len(chain) == 0 {
+		return d
+	}
+	d = d.At(&chain[0])
+	if len(chain) > 1 {
+		d.Stack = chain[1:]
+	}
+	return d
+}
+
+// Chain renders a call chain as "lib/app.ct:3:5 <- main.ct:10:1".
+func Chain(chain []Frame) string {
+	parts := make([]string, len(chain))
+	for i, f := range chain {
+		parts[i] = fmt.Sprintf("%s:%d:%d", f.File, f.Line, f.Column)
+	}
+	return strings.Join(parts, " <- ")
+}
+
 // Location returns "file:line:col", "file:line", "file" or "".
 func (d Diagnostic) Location() string {
 	switch {

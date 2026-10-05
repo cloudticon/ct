@@ -220,7 +220,7 @@ __ct_resources.push({
 });
 `, nil)
 
-	stdout, _, err := runTemplateE2E(t, "demo", dir)
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "--validate=false")
 	require.NoError(t, err)
 
 	docs := splitYAMLDocs(t, stdout)
@@ -462,6 +462,60 @@ __ct_resources.push({
 	data := asMap(t, splitYAMLDocs(t, stdout)[0]["data"])
 	assert.Equal(t, "nginx:1.27", data["image"])
 	assert.Equal(t, "3", data["replicas"])
+}
+
+func TestTemplateE2E_ValidationPointsAtTheRegisteringLine(t *testing.T) {
+	dir := writeProject(t, `import { configMap } from "./lib/k8s";
+
+configMap({ name: "ok", data: { a: "1" } });
+configMap({ name: "Bad_Name", spec: { data: { a: "1" } } });
+`, map[string]string{
+		"lib/k8s.ct": `export function configMap(args: { name: string; [k: string]: unknown }) {
+  const { name, ...rest } = args;
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name }, ...rest });
+}
+`,
+	})
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 2)
+	for _, d := range list {
+		assert.Equal(t, "lib/k8s.ct", d.File, "%s", d)
+		assert.Equal(t, 3, d.Line, "%s", d)
+		require.Len(t, d.Stack, 1, "the call chain reaches the user's call: %s", d)
+		assert.Equal(t, "main.ct", d.Stack[0].File)
+		assert.Equal(t, 4, d.Stack[0].Line)
+		assert.Equal(t, `ConfigMap "Bad_Name"`, d.Resource)
+	}
+	assert.Equal(t, "metadata.name", list[0].Path)
+	assert.Equal(t, diag.CodeUnknownField, list[1].Code)
+	assert.Equal(t, "spec", list[1].Path)
+}
+
+func TestTemplateE2E_ValidateFalseSkipsValidation(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" }, spec: { x: 1 } });
+`, nil)
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+	require.Error(t, err)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "--validate=false")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "spec:")
+}
+
+func TestTemplateE2E_RejectsInvalidReleaseName(t *testing.T) {
+	dir := writeProject(t, `__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" } });`, nil)
+
+	_, _, err := runTemplateE2E(t, "My_App", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Contains(t, list[0].Message, `invalid release name "My_App"`)
 }
 
 // --- helpers ---

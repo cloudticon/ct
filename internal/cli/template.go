@@ -4,13 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cloudticon/ct/internal/output"
+	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/cloudticon/ct/pkg/manifest"
+	"github.com/cloudticon/ct/pkg/validate"
 	"github.com/spf13/cobra"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
 type templateOpts struct {
@@ -21,6 +25,7 @@ type templateOpts struct {
 	setStringValues []string
 	noCache         bool
 	releaseName     string
+	validate        bool
 }
 
 func newTemplateCmd() *cobra.Command {
@@ -38,7 +43,7 @@ func newTemplateCmd() *cobra.Command {
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "default namespace for resources")
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "yaml", "output format: yaml or json")
-	addValuesFlags(cmd, &opts)
+	addRenderFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "skip cache, re-download remote source")
 
 	return cmd
@@ -48,13 +53,17 @@ func init() {
 	rootCmd.AddCommand(newTemplateCmd())
 }
 
-func addValuesFlags(cmd *cobra.Command, opts *templateOpts) {
+func addRenderFlags(cmd *cobra.Command, opts *templateOpts) {
+	cmd.Flags().BoolVar(&opts.validate, "validate", true, "check rendered objects against the Kubernetes API schema before output")
 	cmd.Flags().StringArrayVarP(&opts.valuesFiles, "values", "f", nil, "values file (JSON or YAML); repeat to deep-merge files left to right; replaces auto-detected values.json/values.yaml")
 	cmd.Flags().StringArrayVar(&opts.setValues, "set", nil, "override a value (e.g. --set replicas=5, --set 'annotations.a\\.b/c=x'); numbers, true/false and null are typed")
 	cmd.Flags().StringArrayVar(&opts.setStringValues, "set-string", nil, "override a value, always as a string (e.g. --set-string image.tag=1.10)")
 }
 
 func runTemplate(cmd *cobra.Command, releaseName, sourceDir string, opts templateOpts) error {
+	if err := validateReleaseName(releaseName); err != nil {
+		return err
+	}
 	resolvedDir, err := resolveSourceDir(sourceDir, opts.noCache)
 	if err != nil {
 		return err
@@ -113,9 +122,27 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 	if err != nil {
 		return nil, err
 	}
+	if opts.validate {
+		if problems := validate.Resources(result.Resources, result.Origin); len(problems) > 0 {
+			return nil, problems
+		}
+	}
 	resources := result.Resources
 	manifest.SortForApply(resources)
 	return resources, nil
+}
+
+// validateReleaseName enforces what the release name ends up in: a label
+// value and the inventory ConfigMap name.
+func validateReleaseName(name string) error {
+	if msgs := utilvalidation.IsDNS1123Label(name); len(msgs) > 0 {
+		return diag.List{{
+			Code:    diag.CodeInvalidValue,
+			Message: fmt.Sprintf("invalid release name %q: %s", name, strings.Join(msgs, "; ")),
+			Hint:    "release names are lowercase letters, digits and '-', at most 63 characters, e.g. my-app",
+		}}
+	}
+	return nil
 }
 
 // renderTimeout stops runaway .ct programs (endless loops) with a stack trace
