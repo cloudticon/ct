@@ -87,6 +87,8 @@ func hintFor(fe *field.Error) string {
 		return "check the field name and nesting; for workloads, container fields (image, ports, env) go under spec.template.spec.containers[]"
 	case fe.Type == unknownField:
 		return "check the field name and nesting against the Kubernetes API reference (`kubectl explain`); if your cluster is newer than this ct build, pass --validate=false"
+	case strings.HasPrefix(fe.Detail, "expected a string, got"):
+		return "convert it in code with String(...), quote it in the values file, or pass it with --set-string"
 	case fe.Field == "metadata.name" && fe.Type == field.ErrorTypeRequired:
 		return "every object needs a name; factories usually take it as `name`"
 	case (fe.Field == "metadata.name" || fe.Field == "metadata.namespace") && fe.Type == field.ErrorTypeInvalid:

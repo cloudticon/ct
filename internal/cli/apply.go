@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/cloudticon/ct/internal/output"
+	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 type applyOpts struct {
@@ -72,7 +75,7 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 	}
 
 	if err := cluster.ApplyRelease(cmd.Context(), opts.namespace, releaseName, resources); err != nil {
-		return fmt.Errorf("apply failed: %w", err)
+		return applyError(err)
 	}
 
 	if opts.outputFmt != "" {
@@ -84,6 +87,20 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 	}
 
 	return nil
+}
+
+// applyError turns common cluster errors into diagnostics with a next step.
+func applyError(err error) error {
+	var status *apierrors.StatusError
+	if errors.As(err, &status) && apierrors.IsNotFound(err) && status.ErrStatus.Details != nil &&
+		status.ErrStatus.Details.Kind == "namespaces" {
+		return diag.List{{
+			Code:    "namespace-not-found",
+			Message: fmt.Sprintf("apply failed: %v", err),
+			Hint:    "pass --create-namespace, or register a Namespace object in main.ct",
+		}}
+	}
+	return fmt.Errorf("apply failed: %w", err)
 }
 
 func ensureApplyNamespace(ctx context.Context, cluster k8s.Cluster, namespace string, createNamespace bool) error {
