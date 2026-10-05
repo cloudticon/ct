@@ -7,7 +7,10 @@ import (
 	"log"
 
 	"github.com/cloudticon/ct/pkg/diag"
+	"github.com/go-logr/logr"
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 )
 
 var version = "dev"
@@ -31,6 +34,7 @@ var rootCmd = &cobra.Command{
 		default:
 			return fmt.Errorf("unsupported --error-format %q (expected text or json)", errorFormat)
 		}
+		quietClientGo()
 		return nil
 	},
 }
@@ -38,6 +42,15 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.Version = version
 	rootCmd.PersistentFlags().StringVar(&errorFormat, "error-format", "text", "how to print errors: text, or json for tools and AI agents")
+}
+
+// quietClientGo mutes client-go's klog output (transient trouble such as a
+// port-forward to a pod that just went away, which ct reports itself) and
+// prints API server warnings (deprecated APIs, unknown fields) once each,
+// through the same writer as ct's own progress lines.
+func quietClientGo() {
+	klog.SetLogger(logr.Discard())
+	rest.SetDefaultWarningHandler(rest.NewWarningWriter(log.Writer(), rest.WarningWriterOptions{Deduplicate: true}))
 }
 
 func Execute() error {
