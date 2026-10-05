@@ -5,18 +5,18 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/cloudticon/ctts/internal/output"
-	"github.com/cloudticon/ctts/pkg/engine"
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/internal/output"
+	"github.com/cloudticon/ct/pkg/engine"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/spf13/cobra"
 )
 
 type templateOpts struct {
-	namespace  string
-	valuesFile string
-	outputFmt  string
-	setValues  []string
-	noCache    bool
+	namespace   string
+	valuesFile  string
+	outputFmt   string
+	setValues   []string
+	noCache     bool
 	releaseName string
 }
 

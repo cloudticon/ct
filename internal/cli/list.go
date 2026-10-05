@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"

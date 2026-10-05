@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s"
 )
 
 // FakePod is the in-memory pod fixture. Healthy=true means WaitPod returns

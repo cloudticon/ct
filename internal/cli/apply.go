@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cloudticon/ctts/internal/output"
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/internal/output"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/spf13/cobra"
 )
 

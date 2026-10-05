@@ -3,7 +3,7 @@ package output_test
 import (
 	"testing"
 
-	"github.com/cloudticon/ctts/internal/output"
+	"github.com/cloudticon/ct/internal/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

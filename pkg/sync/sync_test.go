@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -1,6 +1,6 @@
 package cli
 
-import "github.com/cloudticon/ctts/pkg/k8s"
+import "github.com/cloudticon/ct/pkg/k8s"
 
 // newClusterFn is the single seam for constructing a k8s.Cluster from CLI
 // flags. Tests override this to inject k8stest.NewFake() and exercise

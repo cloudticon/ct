@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/cloudticon/ctts/pkg/cache"
-	"github.com/cloudticon/ctts/pkg/packages"
+	"github.com/cloudticon/ct/pkg/cache"
+	"github.com/cloudticon/ct/pkg/packages"
 )
 
 var (

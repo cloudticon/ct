@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/cloudticon/ctts/internal/scaffold"
+	"github.com/cloudticon/ct/internal/scaffold"
 	"github.com/spf13/cobra"
 )
 

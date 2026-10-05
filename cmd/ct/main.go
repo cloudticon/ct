@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/cloudticon/ctts/internal/cli"
+	"github.com/cloudticon/ct/internal/cli"
 )
 
 func main() {

@@ -9,10 +9,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cloudticon/ctts/internal/dev"
-	"github.com/cloudticon/ctts/pkg/cache"
-	"github.com/cloudticon/ctts/pkg/engine"
-	"github.com/cloudticon/ctts/pkg/packages"
+	"github.com/cloudticon/ct/internal/dev"
+	"github.com/cloudticon/ct/pkg/cache"
+	"github.com/cloudticon/ct/pkg/engine"
+	"github.com/cloudticon/ct/pkg/packages"
 	"github.com/spf13/cobra"
 )
 

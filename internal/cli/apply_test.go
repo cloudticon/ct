@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cloudticon/ctts/internal/scaffold"
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/internal/scaffold"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -13,7 +13,7 @@ import (
 	"strings"
 	stdsync "sync"
 
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/fatih/color"
 )
 

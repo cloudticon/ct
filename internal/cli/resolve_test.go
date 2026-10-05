@@ -102,4 +102,3 @@ func TestResolveSourceDir_NoCacheInvalidateError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalidating cache")
 }
-

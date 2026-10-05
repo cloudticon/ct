@@ -192,7 +192,6 @@ func watchPodHealth(ctx context.Context, c *client, podName string) error {
 	}
 }
 
-
 func defaultRetrySleep(ctx context.Context) error {
 	select {
 	case <-ctx.Done():

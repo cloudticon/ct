@@ -4,22 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
 	"golang.org/x/term"
+	"io"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/remotecommand"
+	"net/http"
+	"net/url"
+	"os"
 )
 
 var (
-	waitForPodForExecFn   = waitForPod
-	execStreamRunnerFn    = execStream
-	buildExecURLFn        = buildExecURL
-	newExecExecutorForURL = remotecommand.NewSPDYExecutor
-	parameterCodec runtime.ParameterCodec = func() runtime.ParameterCodec {
+	waitForPodForExecFn                          = waitForPod
+	execStreamRunnerFn                           = execStream
+	buildExecURLFn                               = buildExecURL
+	newExecExecutorForURL                        = remotecommand.NewSPDYExecutor
+	parameterCodec        runtime.ParameterCodec = func() runtime.ParameterCodec {
 		s := runtime.NewScheme()
 		_ = corev1.AddToScheme(s)
 		return runtime.NewParameterCodec(s)

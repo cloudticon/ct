@@ -150,7 +150,7 @@ __ct_resources.push({
   data: { env: Values.env },
 });
 `, map[string]string{
-		"values.json":     `{"env": "default"}`,
+		"values.json":      `{"env": "default"}`,
 		"values-prod.json": `{"env": "production"}`,
 	})
 

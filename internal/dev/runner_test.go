@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudticon/ctts/pkg/engine"
-	"github.com/cloudticon/ctts/pkg/k8s"
-	"github.com/cloudticon/ctts/pkg/k8s/k8stest"
+	"github.com/cloudticon/ct/pkg/engine"
+	"github.com/cloudticon/ct/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s/k8stest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

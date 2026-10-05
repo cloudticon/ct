@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cloudticon/ctts/internal/dev"
+	"github.com/cloudticon/ct/internal/dev"
 	"github.com/spf13/cobra"
 )
 

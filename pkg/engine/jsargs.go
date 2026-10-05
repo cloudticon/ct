@@ -14,7 +14,7 @@ type Args struct {
 	fnName string
 }
 
-func (a *Args) Len() int            { return len(a.call.Arguments) }
+func (a *Args) Len() int               { return len(a.call.Arguments) }
 func (a *Args) Raw(idx int) goja.Value { return a.call.Argument(idx) }
 
 func (a *Args) HasArg(idx int) bool {

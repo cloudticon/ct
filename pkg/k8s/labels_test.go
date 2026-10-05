@@ -39,7 +39,7 @@ func TestInjectReleaseLabels_DoesNotOverrideExistingLabels(t *testing.T) {
 			"metadata": map[string]interface{}{
 				"name": "cfg",
 				"labels": map[string]interface{}{
-					"custom":                        "value",
+					"custom":                       "value",
 					"app.kubernetes.io/managed-by": "helm",
 					"ct.cloudticon.com/instance":   "existing-release",
 				},

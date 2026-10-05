@@ -23,11 +23,11 @@ import (
 // and require cross-file lookups during reads.
 
 const (
-	managedByLabelKey  = "app.kubernetes.io/managed-by"
-	managedByLabelVal  = "ct"
-	instanceLabelKey   = "ct.cloudticon.com/instance"
-	inventoryDataKey   = "resources"
-	inventoryCMPrefix  = "ct-inventory-"
+	managedByLabelKey = "app.kubernetes.io/managed-by"
+	managedByLabelVal = "ct"
+	instanceLabelKey  = "ct.cloudticon.com/instance"
+	inventoryDataKey  = "resources"
+	inventoryCMPrefix = "ct-inventory-"
 )
 
 // ReleaseInfo summarizes a release tracked in inventory.

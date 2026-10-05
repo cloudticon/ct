@@ -1,4 +1,4 @@
-module github.com/cloudticon/ctts
+module github.com/cloudticon/ct
 
 go 1.25.0
 

@@ -1,9 +1,9 @@
 # ct — Kubernetes manifests from code
 
-[![Build](https://github.com/cloudticon/ctts/actions/workflows/build.yml/badge.svg)](https://github.com/cloudticon/ctts/actions/workflows/build.yml)
-[![Release](https://github.com/cloudticon/ctts/actions/workflows/release.yml/badge.svg)](https://github.com/cloudticon/ctts/actions/workflows/release.yml)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/cloudticon/ctts)](https://github.com/cloudticon/ctts)
-[![License](https://img.shields.io/github/license/cloudticon/ctts)](https://github.com/cloudticon/ctts/blob/master/LICENSE)
+[![Build](https://github.com/cloudticon/ct/actions/workflows/build.yml/badge.svg)](https://github.com/cloudticon/ct/actions/workflows/build.yml)
+[![Release](https://github.com/cloudticon/ct/actions/workflows/release.yml/badge.svg)](https://github.com/cloudticon/ct/actions/workflows/release.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/cloudticon/ct)](https://github.com/cloudticon/ct)
+[![License](https://img.shields.io/github/license/cloudticon/ct)](https://github.com/cloudticon/ct/blob/master/LICENSE)
 
 > **⚠️ Beta** — `ct` is under active development. APIs, CLI flags, and file formats may change between releases. Feedback and bug reports are welcome!
 
@@ -32,7 +32,7 @@
 One-line install (Linux/macOS):
 
 ```bash
-curl -fsSL https://cloudtion.com/install.sh | sudo sh
+curl -fsSL https://cloudticon.com/install.sh | sudo sh
 ```
 
 Via `go install`:
@@ -450,9 +450,9 @@ The engine, cache, and package resolver are exported as public Go packages under
 
 ```go
 import (
-    "github.com/cloudticon/ctts/pkg/engine"
-    "github.com/cloudticon/ctts/pkg/cache"
-    "github.com/cloudticon/ctts/pkg/packages"
+    "github.com/cloudticon/ct/pkg/engine"
+    "github.com/cloudticon/ct/pkg/cache"
+    "github.com/cloudticon/ct/pkg/packages"
 )
 ```
 

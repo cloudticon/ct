@@ -23,9 +23,9 @@ var logColorFns = []*color.Color{
 }
 
 var (
-	waitForPodForLogsFn      = waitForPod
-	streamPodLogsForLogsFn   = streamPodLogs
-	sleepForLogReconnectsFn  = time.Sleep
+	waitForPodForLogsFn     = waitForPod
+	streamPodLogsForLogsFn  = streamPodLogs
+	sleepForLogReconnectsFn = time.Sleep
 )
 
 // streamLogs streams pod logs for a selected target and reconnects on pod/log stream churn.

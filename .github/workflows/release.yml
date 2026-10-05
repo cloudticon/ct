@@ -11,8 +11,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-      - run: go test ./...
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - run: go vet ./...
+      - run: go test -race ./...
 
   release:
     needs: test
@@ -24,6 +27,9 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+            suffix: ""
+          - goos: linux
+            goarch: arm64
             suffix: ""
           - goos: darwin
             goarch: amd64
@@ -41,13 +47,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version-file: go.mod
       - name: Build
         env:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -ldflags="-s -w" -o ct-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }} ./cmd/ct
+        run: go build -ldflags="-s -w -X github.com/cloudticon/ct/internal/cli.version=${{ github.ref_name }}" -o ct-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }} ./cmd/ct
       - uses: softprops/action-gh-release@v2
         with:
           files: ct-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}

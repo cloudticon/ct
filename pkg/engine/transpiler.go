@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/cloudticon/ctts/pkg/cache"
-	"github.com/cloudticon/ctts/pkg/packages"
+	"github.com/cloudticon/ct/pkg/cache"
+	"github.com/cloudticon/ct/pkg/packages"
 	"github.com/evanw/esbuild/pkg/api"
 )
 

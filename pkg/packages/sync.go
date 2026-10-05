@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cloudticon/ctts/pkg/cache"
+	"github.com/cloudticon/ct/pkg/cache"
 )
 
 func SyncPackages(projectDir string) error {

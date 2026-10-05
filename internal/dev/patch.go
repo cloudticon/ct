@@ -1,6 +1,6 @@
 package dev
 
-import "github.com/cloudticon/ctts/pkg/engine"
+import "github.com/cloudticon/ct/pkg/engine"
 
 // PatchResources modifies workload resources based on dev target config.
 // Called between template render and apply.

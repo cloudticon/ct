@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cloudticon/ctts/pkg/engine"
-	"github.com/cloudticon/ctts/pkg/k8s"
-	ctsync "github.com/cloudticon/ctts/pkg/sync"
+	"github.com/cloudticon/ct/pkg/engine"
+	"github.com/cloudticon/ct/pkg/k8s"
+	ctsync "github.com/cloudticon/ct/pkg/sync"
 	"github.com/fatih/color"
 	"github.com/pterm/pterm"
 	"k8s.io/klog/v2"
