@@ -78,14 +78,15 @@ func TestApplyCmd_UsageShowsTwoArgs(t *testing.T) {
 
 func TestApplyCmd_MissingMainCt_WithReleaseName(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "project")
-	require.NoError(t, scaffold.Init(dir))
+	_, err := scaffold.Init(dir, scaffold.Options{})
+	require.NoError(t, err)
 
 	cmd := newApplyCmd()
 	cmd.SetArgs([]string{"prod-release", t.TempDir()})
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 
-	err := cmd.Execute()
+	err = cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "entry point not found")
 }

@@ -14,7 +14,8 @@ import (
 func setupProject(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "project")
-	require.NoError(t, scaffold.Init(dir))
+	_, err := scaffold.Init(dir, scaffold.Options{})
+	require.NoError(t, err)
 	return dir
 }
 
