@@ -40,11 +40,11 @@ The branch that introduces this document fixes correctness bugs and lays the bas
 | --- | --- |
 | Validation | `pkg/validate`: strict decoding of built-in kinds into client-go types (unknown fields, wrong types, wrong or removed apiVersions) plus the admission rules the API server enforces. On by default; `--validate=false` skips it. |
 | Diagnostics | `pkg/diag`: structured errors with code, position, resource, field path and hint; `--error-format json`. Inline source maps make Goja stack traces point at `.ct` lines; each object remembers the call chain that registered it. |
-| Rendering | Explicit `{}` is kept (`emptyDir: {}`, `podSelector: {}`); cluster-scoped kinds get no namespace; duplicate objects are an error; Helm install order for `template` and `apply`; apply waits for CRDs created in the same run; 1-minute render timeout. |
+| Rendering | Only `null`/`undefined` fields are dropped, like `JSON.stringify` (before, empty objects and arrays vanished too, turning a NetworkPolicy `ingress: [{}]` from allow-all into deny-all); objects are copied out of the JS runtime so shared objects can't leak namespaces; cluster-scoped kinds get no namespace; duplicate objects are an error; Helm install order (by API group and kind) for `template` and `apply`; apply waits for CRDs created in the same run; bounded call stack and a 1-minute render timeout. |
 | Values | Repeatable `-f` with Helm-style deep merge, `--set` without a values file, number typing that keeps `1.10` a string, `--set-string`, escaped dots in keys. |
 | Bundling | Parser-based async detection (no false positives on comments, strings or names like `async-worker`), extensionless `.ct` imports, import errors with hints. |
-| Releases | Inventory keeps objects created by a failed apply, so they can still be pruned. |
-| Cache | Atomic installs, `--no-cache` refreshes imported packages, no git password prompts, custom git hosts. |
+| Releases | Prune compares objects by API group, kind, effective namespace and name (it used to delete the object it had just applied after an `apiVersion` or `-n` change); the inventory keeps objects created by a failed apply; delete runs in reverse install order; `ct list` counts only inventories. |
+| Cache | Atomic installs, package URLs and import paths can't escape the cache, `--no-cache` refreshes imported packages, no git password prompts, custom git hosts. |
 | Project | Module path `github.com/cloudticon/ct` (so `go install` works); `ct init` never overwrites files, scaffolds a valid app and writes `AGENTS.md`. |
 
 In `cloudticon/k8s` (separate branch): core kinds use `apiVersion: v1` instead of `core/v1`; ConfigMap, Secret, ServiceAccount, RBAC and StorageClass fields render at the top level instead of under `spec`; cluster-scoped kinds carry the scope marker. ct's new validation would have caught all three.

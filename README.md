@@ -51,7 +51,7 @@ go build -ldflags="-s -w" -o ct ./cmd/ct
 ## Quick start
 
 ```bash
-ct init                                    # scaffold in the current directory
+ct init                                    # scaffold in the current directory (or: ct init myproject)
 ct template my-app . -n production         # render to YAML (validated)
 ct template my-app . -n production -o json
 ct template my-app . -f values.yaml -f values-prod.yaml --set replicas=5
@@ -192,7 +192,7 @@ ct template shop . -f values.yaml -f values-prod.yaml --set-string image.tag=1.1
 
 - **built-in kinds** are decoded strictly into the Kubernetes API types: unknown fields, wrong types and wrong apiVersions are reported with their field path, all in one run;
 - **removed APIs** (e.g. `extensions/v1beta1` Ingress, `batch/v1beta1` CronJob) name their replacement;
-- **admission rules** the API server enforces: valid names and labels, selector matching the template labels, containers with name and image, exactly one source per volume, `volumeMounts` referencing a volume, Jobs with `restartPolicy: OnFailure|Never`, Services with ports, Ingress paths with `pathType`, base64 `Secret.data`, TLS secrets with `tls.crt`/`tls.key`, CRD names equal to `<plural>.<group>`, and more;
+- **admission rules** the API server enforces: valid names and labels, selector matching the template labels, containers with name and image, at most one source per volume, `volumeMounts` referencing a volume (or a StatefulSet volume claim), Jobs with `restartPolicy: OnFailure|Never`, Services with ports, Ingress paths with `pathType`, base64 `Secret.data`, TLS secrets with `tls.crt`/`tls.key`, CRD names equal to `<plural>.<group>`, and more;
 - **duplicates**: registering the same object twice is an error, not a silent last-write-wins.
 
 Custom resources get metadata checks; their schemas live in their CRDs.
@@ -280,9 +280,9 @@ ct types . --dev           # dev.d.ts for dev.ct
 Global flags:
       --error-format string   how to print errors: text, or json for tools and AI agents (default "text")
 
-ct init [flags]
+ct init [dir] [flags]
   -d, --dir string            project directory (default ".")
-      --force                 overwrite existing files
+      --force                 overwrite an existing main.ct and values.json (AGENTS.md is never overwritten)
 
 ct template <name> <dir|repo> [flags]
   -n, --namespace string      default namespace for resources
@@ -325,7 +325,7 @@ ct types [dir] [flags]
 
 1. **esbuild** bundles `main.ct` and its imports into one script with an inline source map. URL imports resolve from `~/.ct/cache/`; `async`/`await` is rejected by the parser with a precise location.
 2. **Goja**, a JavaScript engine written in Go, runs the bundle with `Values` and `Release` as globals. Each factory call pushes an object to `__ct_resources`; `ct` records the call site of each push. Runaway scripts stop after a minute with a stack trace.
-3. **Normalize**: null fields are dropped (explicit `{}` like `emptyDir: {}` is kept), and namespaced objects without a namespace get `-n`.
+3. **Normalize**: objects are copied out of the JS runtime, `null`/`undefined` fields are dropped the way `JSON.stringify` drops `undefined` (empty objects and arrays like `emptyDir: {}` or `ingress: [{}]` are kept), and namespaced objects without a namespace get `-n`.
 4. **Validate** against the Kubernetes API types and admission rules; reject duplicates.
 5. **Order** objects like Helm does, add the release labels, and print YAML/JSON or server-side-apply them.
 
