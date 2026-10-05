@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cloudticon/ctts/internal/scaffold"
+	"github.com/cloudticon/ct/internal/scaffold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +14,8 @@ import (
 func setupProject(t *testing.T) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), "project")
-	require.NoError(t, scaffold.Init(dir))
+	_, err := scaffold.Init(dir, scaffold.Options{})
+	require.NoError(t, err)
 	return dir
 }
 
@@ -45,8 +46,8 @@ func TestTemplateCmd_RequiresReleaseNameAndSource(t *testing.T) {
 func TestTemplateCmd_AutoDetectsValuesJSON(t *testing.T) {
 	dir := setupProject(t)
 
-	path := resolveValuesPath(dir, "")
-	assert.Equal(t, filepath.Join(dir, "values.json"), path)
+	files := resolveValuesFiles(dir, nil)
+	assert.Equal(t, []string{filepath.Join(dir, "values.json")}, files)
 }
 
 func TestTemplateCmd_ExplicitValuesOverride(t *testing.T) {
@@ -55,14 +56,22 @@ func TestTemplateCmd_ExplicitValuesOverride(t *testing.T) {
 	custom := filepath.Join(t.TempDir(), "custom.json")
 	require.NoError(t, os.WriteFile(custom, []byte(`{"image":"custom:1.0","replicas":1}`), 0644))
 
-	path := resolveValuesPath(dir, custom)
-	assert.Equal(t, custom, path)
+	files := resolveValuesFiles(dir, []string{custom})
+	assert.Equal(t, []string{custom}, files)
+}
+
+func TestTemplateCmd_ExplicitValuesFallBackToProjectDir(t *testing.T) {
+	dir := setupProject(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "values-prod.json"), []byte(`{}`), 0644))
+	t.Chdir(t.TempDir())
+
+	files := resolveValuesFiles(dir, []string{"values-prod.json", "missing.json"})
+	assert.Equal(t, []string{filepath.Join(dir, "values-prod.json"), "missing.json"}, files)
 }
 
 func TestTemplateCmd_NoValuesFile(t *testing.T) {
 	dir := t.TempDir()
-	path := resolveValuesPath(dir, "")
-	assert.Equal(t, "", path)
+	assert.Empty(t, resolveValuesFiles(dir, nil))
 }
 
 func TestTemplateCmd_NoCacheFlagDefault(t *testing.T) {

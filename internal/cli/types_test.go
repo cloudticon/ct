@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudticon/ct/pkg/packages"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -333,6 +334,20 @@ func TestFindEntryPoint(t *testing.T) {
 	})
 }
 
+func TestGenerateValuesDts_QuotesNonIdentifierKeys(t *testing.T) {
+	dts := generateValuesDts(map[string]interface{}{
+		"annotations": map[string]interface{}{"nginx.ingress.kubernetes.io/rewrite-target": "/"},
+		"my-key":      "x",
+		"2fa":         true,
+		"ok_key":      int64(1),
+	})
+
+	assert.Contains(t, dts, `  "2fa": boolean;`)
+	assert.Contains(t, dts, `    "nginx.ingress.kubernetes.io/rewrite-target": string;`)
+	assert.Contains(t, dts, `  "my-key": string;`)
+	assert.Contains(t, dts, `  ok_key: number;`)
+}
+
 func TestImportToURL(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -349,11 +364,32 @@ func TestImportToURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url, ok := importToURL(tt.input)
+			url, ok := packages.ImportURL(tt.input)
 			assert.Equal(t, tt.wantOK, ok)
 			if ok {
 				assert.Equal(t, tt.wantURL, url)
 			}
 		})
 	}
+}
+
+func TestGenerateDevDts_EnvAcceptsBooleanDefaults(t *testing.T) {
+	dts := generateDevDts(nil, []string{"DEBUG"})
+
+	assert.Contains(t, dts, "declare function env(name: CtEnvKey, defaultValue: boolean): boolean;")
+	assert.Contains(t, dts, "declare function env(name: string, defaultValue: boolean): boolean;")
+}
+
+func TestCollectUniqueWorkloadNames_UsesDevReleaseName(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(`
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: Release.name + "-web" },
+  spec: { selector: { matchLabels: { app: "web" } } },
+});
+`), 0o644))
+
+	assert.Equal(t, []string{"dev-web"}, collectUniqueWorkloadNames(dir))
 }

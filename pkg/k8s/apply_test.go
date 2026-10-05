@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
@@ -313,4 +315,116 @@ func TestApply_MixedScopes(t *testing.T) {
 	require.Len(t, actions, 2)
 	assert.Equal(t, "", actions[0].GetNamespace())
 	assert.Equal(t, "my-ns", actions[1].GetNamespace())
+}
+
+func patchedKinds(actions []k8stesting.Action) []string {
+	var kinds []string
+	for _, a := range actions {
+		if p, ok := a.(k8stesting.PatchAction); ok {
+			obj := map[string]interface{}{}
+			_ = json.Unmarshal(p.GetPatch(), &obj)
+			kinds = append(kinds, obj["kind"].(string))
+		}
+	}
+	return kinds
+}
+
+func TestApply_UsesHelmInstallOrder(t *testing.T) {
+	c, dynClient := newTestClient(t, []*metav1.APIResourceList{
+		{
+			GroupVersion: "v1",
+			APIResources: []metav1.APIResource{
+				{Name: "namespaces", Kind: "Namespace", Namespaced: false},
+				{Name: "services", Kind: "Service", Namespaced: true},
+				{Name: "configmaps", Kind: "ConfigMap", Namespaced: true},
+			},
+		},
+	})
+
+	resources := []Resource{
+		{"apiVersion": "v1", "kind": "Service", "metadata": map[string]interface{}{"name": "svc", "namespace": "team"}},
+		{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]interface{}{"name": "cfg", "namespace": "team"}},
+		{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]interface{}{"name": "team"}},
+	}
+
+	require.NoError(t, c.apply(context.Background(), resources))
+
+	assert.Equal(t, []string{"Namespace", "ConfigMap", "Service"}, patchedKinds(dynClient.Actions()))
+	assert.Equal(t, "Service", resources[0]["kind"], "caller's slice keeps its order")
+}
+
+func TestApply_WaitsForKindOfCRDAppliedInSameRun(t *testing.T) {
+	oldTimeout, oldInterval := crdEstablishTimeout, crdPollInterval
+	crdEstablishTimeout, crdPollInterval = 2*time.Second, time.Millisecond
+	t.Cleanup(func() { crdEstablishTimeout, crdPollInterval = oldTimeout, oldInterval })
+
+	fakeClient := fake.NewSimpleClientset()
+	fakeClient.Fake.Resources = []*metav1.APIResourceList{{
+		GroupVersion: "apiextensions.k8s.io/v1",
+		APIResources: []metav1.APIResource{{Name: "customresourcedefinitions", Kind: "CustomResourceDefinition"}},
+	}}
+	dynClient := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	discoveryCalls := 0
+	dynClient.PrependReactor("patch", "*", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, &unstructured.Unstructured{Object: map[string]interface{}{}}, nil
+	})
+	c := &client{
+		CoreV1:    fakeClient.CoreV1(),
+		Discovery: &countingDiscovery{DiscoveryInterface: fakeClient.Discovery(), calls: &discoveryCalls},
+		Dynamic:   dynClient,
+		Namespace: "default",
+		gvrCache:  make(map[string]*resourceInfo),
+	}
+	// The API server starts serving the new kind only after a few discovery
+	// round-trips, like a real CRD becoming Established.
+	c.Discovery.(*countingDiscovery).onCall = func(n int) {
+		if n == 4 {
+			fakeClient.Fake.Resources = append(fakeClient.Fake.Resources, &metav1.APIResourceList{
+				GroupVersion: "example.com/v1",
+				APIResources: []metav1.APIResource{{Name: "widgets", Kind: "Widget", Namespaced: true}},
+			})
+		}
+	}
+
+	resources := []Resource{
+		{"apiVersion": "example.com/v1", "kind": "Widget", "metadata": map[string]interface{}{"name": "w"}},
+		{
+			"apiVersion": "apiextensions.k8s.io/v1",
+			"kind":       "CustomResourceDefinition",
+			"metadata":   map[string]interface{}{"name": "widgets.example.com"},
+			"spec": map[string]interface{}{
+				"group": "example.com",
+				"names": map[string]interface{}{"kind": "Widget", "plural": "widgets"},
+			},
+		},
+	}
+
+	require.NoError(t, c.apply(context.Background(), resources))
+	assert.Equal(t, []string{"CustomResourceDefinition", "Widget"}, patchedKinds(dynClient.Actions()))
+}
+
+func TestApply_UnknownKindWithoutCRDFailsFast(t *testing.T) {
+	c, _ := newTestClient(t, nil)
+
+	start := time.Now()
+	err := c.apply(context.Background(), []Resource{
+		{"apiVersion": "example.com/v1", "kind": "Widget", "metadata": map[string]interface{}{"name": "w"}},
+	})
+
+	require.Error(t, err)
+	assert.Less(t, time.Since(start), time.Second, "no CRD in the release, so no waiting")
+}
+
+type countingDiscovery struct {
+	discovery.DiscoveryInterface
+	calls  *int
+	onCall func(n int)
+}
+
+func (d *countingDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.APIResourceList, error) {
+	*d.calls++
+	if d.onCall != nil {
+		d.onCall(*d.calls)
+	}
+	return d.DiscoveryInterface.ServerResourcesForGroupVersion(gv)
 }

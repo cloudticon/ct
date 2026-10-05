@@ -3,9 +3,10 @@ package engine_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
-	"github.com/cloudticon/ctts/pkg/engine"
+	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,4 +116,63 @@ func TestMergeEnvWithSystem_FileWinsOverSystem(t *testing.T) {
 
 	result := engine.MergeEnvWithSystem(fileEnv)
 	assert.Equal(t, "from_file", result["TEST_MERGE_VAR"])
+}
+
+func loadEnvString(t *testing.T, content string) map[string]string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), ".env")
+	require.NoError(t, os.WriteFile(f, []byte(content), 0o644))
+	env, err := engine.LoadEnvFile(f)
+	require.NoError(t, err)
+	return env
+}
+
+// .env files are often also `source`d by shells and use `export`.
+func TestLoadEnvFile_ExportPrefix(t *testing.T) {
+	env := loadEnvString(t, "export FOO=bar\nexport\tTAB=1\nexporter=keep\n")
+	assert.Equal(t, "bar", env["FOO"])
+	assert.Equal(t, "1", env["TAB"])
+	assert.Equal(t, "keep", env["exporter"])
+	_, bogus := env["export FOO"]
+	assert.False(t, bogus)
+}
+
+func TestLoadEnvFile_InlineComments(t *testing.T) {
+	env := loadEnvString(t, "PORT=3000 # web port\nCOLOR=#fff\nURL=http://x/#anchor\nTABBED=1\t# c\n")
+	assert.Equal(t, "3000", env["PORT"])
+	assert.Equal(t, "#fff", env["COLOR"], "# without preceding whitespace is part of the value")
+	assert.Equal(t, "http://x/#anchor", env["URL"])
+	assert.Equal(t, "1", env["TABBED"])
+}
+
+func TestLoadEnvFile_QuotedValuesWithTrailingComment(t *testing.T) {
+	env := loadEnvString(t, "A=\"a # b\" # comment\nB='x' # c\n")
+	assert.Equal(t, "a # b", env["A"])
+	assert.Equal(t, "x", env["B"])
+}
+
+func TestLoadEnvFile_DoubleQuoteEscapes(t *testing.T) {
+	env := loadEnvString(t, `MULTI="line1\nline2"`+"\n"+
+		`QUOTED="say \"hi\""`+"\n"+
+		`WIN="C:\Users\me"`+"\n"+
+		`RAW='a\nb'`+"\n")
+	assert.Equal(t, "line1\nline2", env["MULTI"])
+	assert.Equal(t, `say "hi"`, env["QUOTED"])
+	assert.Equal(t, `C:\Users\me`, env["WIN"], "unknown escapes are kept")
+	assert.Equal(t, `a\nb`, env["RAW"], "single quotes are literal")
+}
+
+func TestLoadEnvFile_BOMAndCRLF(t *testing.T) {
+	env := loadEnvString(t, "\ufeffFOO=bar\r\nBAZ=\"q\"\r\nEMPTY=\r\n")
+	assert.Equal(t, "bar", env["FOO"])
+	assert.Equal(t, "q", env["BAZ"])
+	assert.Equal(t, "", env["EMPTY"])
+}
+
+func TestLoadEnvFile_LongLinesAndEmptyKeys(t *testing.T) {
+	long := strings.Repeat("a", 200*1024)
+	env := loadEnvString(t, "CERT="+long+"\n=orphan\n")
+	assert.Equal(t, long, env["CERT"])
+	_, empty := env[""]
+	assert.False(t, empty)
 }

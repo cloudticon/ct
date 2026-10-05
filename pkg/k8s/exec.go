@@ -4,22 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
 	"golang.org/x/term"
+	"io"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/remotecommand"
+	"net/http"
+	"net/url"
+	"os"
 )
 
 var (
-	waitForPodForExecFn   = waitForPod
-	execStreamRunnerFn    = execStream
-	buildExecURLFn        = buildExecURL
-	newExecExecutorForURL = remotecommand.NewSPDYExecutor
-	parameterCodec runtime.ParameterCodec = func() runtime.ParameterCodec {
+	waitForPodForExecFn                          = waitForPod
+	execStreamRunnerFn                           = execStream
+	buildExecURLFn                               = buildExecURL
+	newExecExecutorForURL                        = remotecommand.NewSPDYExecutor
+	parameterCodec        runtime.ParameterCodec = func() runtime.ParameterCodec {
 		s := runtime.NewScheme()
 		_ = corev1.AddToScheme(s)
 		return runtime.NewParameterCodec(s)
@@ -71,13 +71,27 @@ func (q *termSizeQueue) monitor(fd int) {
 		select {
 		case <-q.sigCh:
 			if w, h, err := getTermSizeFn(fd); err == nil {
-				select {
-				case q.resizeCh <- remotecommand.TerminalSize{Width: uint16(w), Height: uint16(h)}:
-				default:
-				}
+				q.offer(remotecommand.TerminalSize{Width: uint16(w), Height: uint16(h)})
 			}
 		case <-q.done:
 			return
+		}
+	}
+}
+
+// offer queues size, replacing a size that has not been consumed yet: only
+// the latest dimensions matter. (Dropping the new size instead lost the
+// final size of a quick series of resizes.) Only the monitor goroutine sends.
+func (q *termSizeQueue) offer(size remotecommand.TerminalSize) {
+	for {
+		select {
+		case q.resizeCh <- size:
+			return
+		default:
+		}
+		select {
+		case <-q.resizeCh: // discard the stale pending size
+		default:
 		}
 	}
 }

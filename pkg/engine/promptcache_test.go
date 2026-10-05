@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/cloudticon/ctts/pkg/engine"
+	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,4 +131,74 @@ func TestMakePromptFn_TrimWhitespace(t *testing.T) {
 	answer, err := fn("Q?")
 	require.NoError(t, err)
 	assert.Equal(t, "spaced", answer)
+}
+
+// Each prompt created its own bufio.Scanner, which reads ahead: with piped
+// stdin the first prompt swallowed the answers of all following prompts.
+func TestMakePromptFn_MultiplePromptsFromPipedInput(t *testing.T) {
+	cache := engine.NewPromptCacheFromPath(filepath.Join(t.TempDir(), "cache.json"))
+	fn := engine.MakePromptFn(cache, strings.NewReader("alice\nbob\n"), &bytes.Buffer{})
+
+	first, err := fn("Username?")
+	require.NoError(t, err)
+	second, err := fn("Team?")
+	require.NoError(t, err)
+	assert.Equal(t, "alice", first)
+	assert.Equal(t, "bob", second)
+}
+
+// Without input (stdin closed, not a terminal) the prompt used to return ""
+// and cache it, so every later run silently reused the empty answer.
+func TestMakePromptFn_NoInputIsAnErrorAndNotCached(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "cache.json")
+	cache := engine.NewPromptCacheFromPath(cachePath)
+	fn := engine.MakePromptFn(cache, strings.NewReader(""), &bytes.Buffer{})
+
+	_, err := fn("Username?")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Username?")
+	assert.Contains(t, err.Error(), cachePath, "the error must say how to answer non-interactively")
+	_, cached := cache.Get("Username?")
+	assert.False(t, cached)
+}
+
+func TestMakePromptFn_LastLineWithoutNewline(t *testing.T) {
+	cache := engine.NewPromptCacheFromPath(filepath.Join(t.TempDir(), "cache.json"))
+	fn := engine.MakePromptFn(cache, strings.NewReader("alice"), &bytes.Buffer{})
+	answer, err := fn("Username?")
+	require.NoError(t, err)
+	assert.Equal(t, "alice", answer)
+}
+
+func TestMakePromptFn_CachedAnswerSaysWhereToChangeIt(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "cache.json")
+	cache := engine.NewPromptCacheFromPath(cachePath)
+	require.NoError(t, cache.Set("Username?", "alice"))
+
+	var out bytes.Buffer
+	_, err := engine.MakePromptFn(cache, strings.NewReader(""), &out)("Username?")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), cachePath)
+}
+
+func TestPromptCache_NullFileDoesNotPanic(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "cache.json")
+	require.NoError(t, os.WriteFile(cachePath, []byte("null"), 0o600))
+
+	cache := engine.NewPromptCacheFromPath(cachePath)
+	require.NoError(t, cache.Set("q", "a"))
+}
+
+// Answers can be secrets (tokens, passwords).
+func TestPromptCache_FileIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permissions")
+	}
+	cachePath := filepath.Join(t.TempDir(), "cache.json")
+	cache := engine.NewPromptCacheFromPath(cachePath)
+	require.NoError(t, cache.Set("token?", "secret"))
+
+	info, err := os.Stat(cachePath)
+	require.NoError(t, err)
+	assert.Zero(t, info.Mode().Perm()&0o077, "prompt cache must not be readable by other users, got %v", info.Mode().Perm())
 }

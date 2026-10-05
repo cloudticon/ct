@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/cloudticon/ctts/internal/dev"
+	"github.com/cloudticon/ct/internal/dev"
 	"github.com/spf13/cobra"
 )
 
@@ -49,9 +52,13 @@ func runDev(cmd *cobra.Command, opts devOpts) error {
 		return fmt.Errorf("resolving working directory: %w", err)
 	}
 
-	if err := runDevMode(cmd.Context(), dev.RunOpts{
+	ctx, stop := devSignalContext(cmd.Context())
+	defer stop()
+
+	if err := runDevMode(ctx, dev.RunOpts{
 		Dir:             dir,
 		EnvFile:         opts.envFile,
+		EnvFileRequired: cmd.Flags().Changed("env-file"),
 		KubeCtx:         opts.context,
 		ReleaseName:     opts.releaseName,
 		Delete:          opts.delete,
@@ -64,4 +71,20 @@ func runDev(cmd *cobra.Command, opts devOpts) error {
 	}
 
 	return nil
+}
+
+// devSignalContext cancels the dev session on Ctrl+C or SIGTERM so it can
+// shut down gracefully (stop port-forwards and syncs, restore the terminal).
+// Once the context is cancelled the default signal behavior is restored, so
+// a second Ctrl+C still kills a session that does not stop.
+func devSignalContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
 }

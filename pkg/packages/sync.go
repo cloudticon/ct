@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cloudticon/ctts/pkg/cache"
+	"github.com/cloudticon/ct/pkg/cache"
 )
 
 func SyncPackages(projectDir string) error {
@@ -31,17 +31,18 @@ func syncImports(filePath string, visited map[string]bool) error {
 	}
 
 	for _, imp := range imports {
-		if !IsURLImport(imp.Path) {
+		url, ok := ImportURL(imp.Path)
+		if !ok {
 			continue
 		}
 
-		pkgDir, err := cache.Resolve(imp.Path)
+		pkgDir, err := cache.Resolve(url)
 		if err != nil {
 			return fmt.Errorf("resolving %s: %w", imp.Path, err)
 		}
 
-		tsFiles, _ := collectTSFiles(pkgDir)
-		for _, f := range tsFiles {
+		sourceFiles, _ := collectSourceFiles(pkgDir)
+		for _, f := range sourceFiles {
 			if err := syncImports(f, visited); err != nil {
 				return err
 			}
@@ -51,13 +52,14 @@ func syncImports(filePath string, visited map[string]bool) error {
 	return nil
 }
 
-func collectTSFiles(dir string) ([]string, error) {
+// collectSourceFiles lists the .ts and .ct files of a package.
+func collectSourceFiles(dir string) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(path, ".ts") {
+		if !d.IsDir() && (strings.HasSuffix(path, ".ts") || strings.HasSuffix(path, ".ct")) {
 			files = append(files, path)
 		}
 		return nil

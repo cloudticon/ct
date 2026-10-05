@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -103,3 +104,11 @@ func TestResolveSourceDir_NoCacheInvalidateError(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalidating cache")
 }
 
+func TestRemoteSourceURL(t *testing.T) {
+	local := filepath.Join(t.TempDir(), "my.app", "deploy")
+	require.NoError(t, os.MkdirAll(local, 0o755))
+
+	assert.Equal(t, "", remoteSourceURL(local), "an existing directory is local even if it looks like a host")
+	assert.Equal(t, "", remoteSourceURL("."))
+	assert.Equal(t, "https://github.com/acme/infra@v1", remoteSourceURL("github.com/acme/infra@v1/deploy"))
+}

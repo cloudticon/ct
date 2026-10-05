@@ -3,7 +3,7 @@ package output_test
 import (
 	"testing"
 
-	"github.com/cloudticon/ctts/internal/output"
+	"github.com/cloudticon/ct/internal/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -183,7 +183,7 @@ func TestSerialize_CleansNilInArrays(t *testing.T) {
 	assert.NotContains(t, result, "command")
 }
 
-func TestSerialize_RemovesEmptyMapsAfterCleaning(t *testing.T) {
+func TestSerialize_KeepsObjectsEmptiedByNullRemoval(t *testing.T) {
 	resources := []output.Resource{
 		{
 			"apiVersion": "v1",
@@ -202,8 +202,8 @@ func TestSerialize_RemovesEmptyMapsAfterCleaning(t *testing.T) {
 	result, err := output.Serialize(resources, "yaml")
 
 	require.NoError(t, err)
-	assert.NotContains(t, result, "selector")
-	assert.NotContains(t, result, "spec")
+	assert.Contains(t, result, "selector: {}")
+	assert.NotContains(t, result, "removed")
 }
 
 func TestSerialize_EmptyResourceList(t *testing.T) {
@@ -233,4 +233,56 @@ func TestSerialize_PreservesZeroValues(t *testing.T) {
 	assert.Contains(t, result, "count: 0")
 	assert.Contains(t, result, "enabled: false")
 	assert.Contains(t, result, `label: ""`)
+}
+
+func TestSerialize_KeepsAuthoredEmptyObjects(t *testing.T) {
+	resources := []output.Resource{
+		{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata":   map[string]interface{}{"name": "p"},
+			"spec": map[string]interface{}{
+				"volumes": []interface{}{
+					map[string]interface{}{"name": "tmp", "emptyDir": map[string]interface{}{}},
+				},
+			},
+		},
+	}
+
+	result, err := output.Serialize(resources, "yaml")
+
+	require.NoError(t, err)
+	assert.Contains(t, result, "emptyDir: {}")
+}
+
+func TestSerialize_EmptyResourceDoesNotPanic(t *testing.T) {
+	result, err := output.Serialize([]output.Resource{{"labels": nil}}, "yaml")
+
+	require.NoError(t, err)
+	assert.Equal(t, "{}\n", result)
+}
+
+func TestSerialize_YAMLTwoSpaceIndent(t *testing.T) {
+	resources := []output.Resource{
+		{
+			"apiVersion": "v1",
+			"kind":       "Service",
+			"metadata":   map[string]interface{}{"name": "svc"},
+			"spec": map[string]interface{}{
+				"ports": []interface{}{map[string]interface{}{"port": 80}},
+			},
+		},
+	}
+
+	result, err := output.Serialize(resources, "yaml")
+
+	require.NoError(t, err)
+	assert.Equal(t, "apiVersion: v1\nkind: Service\nmetadata:\n  name: svc\nspec:\n  ports:\n    - port: 80\n", result)
+}
+
+func TestSerialize_JSONEmptyListIsArray(t *testing.T) {
+	result, err := output.Serialize(nil, "json")
+
+	require.NoError(t, err)
+	assert.Equal(t, "[]\n", result)
 }

@@ -1,23 +1,27 @@
 package dev
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/cloudticon/ctts/pkg/engine"
-	"github.com/cloudticon/ctts/pkg/k8s"
-	"github.com/cloudticon/ctts/pkg/k8s/k8stest"
+	"github.com/cloudticon/ct/pkg/engine"
+	"github.com/cloudticon/ct/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s/k8stest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/klog/v2"
 )
 
 // devCluster wraps a k8stest.Fake with optional per-method hooks tailored to
@@ -36,10 +40,13 @@ type devCluster struct {
 	WatchPodFn    func(ctx context.Context, ns, pod string) error
 	ExecFn        func(ctx context.Context, ns string, sel k8s.Selector, opts k8s.ExecOpts) error
 	WaitPodFn     func(ctx context.Context, ns string, sel k8s.Selector) (string, error)
+	ExecPodFn     func(ctx context.Context, ns, pod string, opts k8s.ExecOpts) error
 
 	portCalls     []string
 	logCalls      []string
 	syncCalls     []string
+	terminalPods  []string
+	watchedPods   []string
 	terminalCalls int32
 	waitCalls     int32
 	healthCalls   int32
@@ -79,6 +86,9 @@ func (d *devCluster) StreamLogs(ctx context.Context, ns, target string, sel k8s.
 
 func (d *devCluster) WatchPod(ctx context.Context, ns, pod string) error {
 	atomic.AddInt32(&d.healthCalls, 1)
+	d.mu.Lock()
+	d.watchedPods = append(d.watchedPods, pod)
+	d.mu.Unlock()
 	if d.WatchPodFn != nil {
 		return d.WatchPodFn(ctx, ns, pod)
 	}
@@ -96,11 +106,25 @@ func (d *devCluster) Exec(ctx context.Context, ns string, sel k8s.Selector, opts
 // ExecPod is the route used by sync. We return success immediately so the
 // dev session's sync feature reports ready and unblocks the terminal.
 func (d *devCluster) ExecPod(ctx context.Context, ns, pod string, opts k8s.ExecOpts) error {
+	if opts.TTY {
+		// The interactive terminal.
+		d.mu.Lock()
+		d.terminalPods = append(d.terminalPods, pod)
+		d.mu.Unlock()
+		atomic.AddInt32(&d.terminalCalls, 1)
+		if d.ExecFn != nil {
+			return d.ExecFn(ctx, ns, nil, opts)
+		}
+		return d.Fake.ExecPod(ctx, ns, pod, opts)
+	}
 	d.mu.Lock()
 	if len(opts.Command) > 0 && opts.Command[0] == "tar" {
 		d.syncCalls = append(d.syncCalls, "tar")
 	}
 	d.mu.Unlock()
+	if d.ExecPodFn != nil {
+		return d.ExecPodFn(ctx, ns, pod, opts)
+	}
 	return nil
 }
 
@@ -129,6 +153,9 @@ func silenceDevLog(t *testing.T) {
 	origSpinner := startSpinner
 	startSpinner = func(string) progressSpinner { return noopSpinner{} }
 	t.Cleanup(func() { startSpinner = origSpinner })
+
+	// Reconnect immediately unless a test opts into a backoff.
+	noRetryBackoff(t)
 }
 
 type noopSpinner struct{}
@@ -218,13 +245,13 @@ func TestLoadEnvVars_LoadsRelativeFileAndMerges(t *testing.T) {
 	envPath := filepath.Join(dir, ".env.dev")
 	require.NoError(t, os.WriteFile(envPath, []byte("RUNNER_ENV=value\n"), 0o644))
 
-	env, err := loadEnvVars(dir, ".env.dev")
+	env, err := loadEnvVars(dir, ".env.dev", true)
 	require.NoError(t, err)
 	assert.Equal(t, "value", env["RUNNER_ENV"])
 }
 
 func TestLoadEnvVars_MissingFileDoesNotFail(t *testing.T) {
-	env, err := loadEnvVars(t.TempDir(), ".env.missing")
+	env, err := loadEnvVars(t.TempDir(), ".env.missing", false)
 	require.NoError(t, err)
 	assert.NotNil(t, env)
 }
@@ -691,4 +718,595 @@ func TestRunDevSession_CancelCascadesToAllFeatures(t *testing.T) {
 		t.Fatalf("runDevSession did not return after cancel; ActiveOps=%d", fake.ActiveOps())
 	}
 	assert.Equal(t, 0, fake.ActiveOps(), "no goroutines should remain active after cancel")
+}
+
+// Pods with an injected sidecar (Istio, Linkerd, ...) have several
+// containers; the API server rejects exec without a container name there, so
+// sync and the terminal must address the target's container explicitly.
+func TestStartDevFeatures_TerminalAndSyncUseTargetContainer(t *testing.T) {
+	silenceDevLog(t)
+
+	fake := k8stest.NewFake()
+	fake.AddPod(&k8stest.FakePod{
+		Name: "web-x", Namespace: "ns",
+		Labels: k8s.Selector{"app": "web"}, Healthy: true,
+		Containers: []string{"app", "istio-proxy"},
+	})
+	fake.ExecHook = func(ns, pod string, opts k8s.ExecOpts) error { return nil }
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "main.go"), []byte("package main"), 0o644))
+
+	targets := []Target{{
+		Name: "web", Selector: map[string]string{"app": "web"},
+		Container: "app",
+		Sync:      []SyncRule{{From: src, To: "/app"}},
+		Terminal:  "bash",
+	}}
+
+	require.NoError(t, startDevFeatures(context.Background(), fake, "ns", targets, &bytes.Buffer{}))
+
+	var commands []string
+	for _, call := range fake.ExecCalls {
+		commands = append(commands, call.Opts.Command[0])
+		assert.Equal(t, "app", call.Opts.Container, "exec %v must target the dev container", call.Opts.Command)
+	}
+	assert.Contains(t, commands, "tar", "initial sync should have run")
+	assert.Contains(t, commands, "/bin/sh", "terminal should have run")
+}
+
+// slowUnwrapError delays anyone walking the error chain (errors.Is/As). It
+// widens the window between a feature returning an error and the session
+// reacting to it, which makes ordering bugs deterministic.
+type slowUnwrapError struct{ msg string }
+
+func (e slowUnwrapError) Error() string { return e.msg }
+func (e slowUnwrapError) Unwrap() error {
+	time.Sleep(100 * time.Millisecond)
+	return nil
+}
+
+// A failed initial sync used to signal "ready" before the failure was
+// reported, so the session printed "initial sync complete" and started the
+// terminal on top of a failed sync.
+func TestStartDevFeatures_FailedInitialSyncDoesNotStartTerminal(t *testing.T) {
+	silenceDevLog(t)
+	var successes []string
+	var mu sync.Mutex
+	startSpinner = func(string) progressSpinner {
+		return recordingSpinner{onSuccess: func(msg string) {
+			mu.Lock()
+			successes = append(successes, msg)
+			mu.Unlock()
+		}}
+	}
+
+	dc := newDevCluster()
+	dc.ExecPodFn = func(_ context.Context, _ string, _ string, opts k8s.ExecOpts) error {
+		if opts.Command[0] == "tar" {
+			return slowUnwrapError{msg: "command terminated with exit code 2"}
+		}
+		return nil
+	}
+	dc.ExecFn = func(ctx context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o644))
+	targets := []Target{{
+		Name: "web", Selector: map[string]string{"app": "web"},
+		Sync:     []SyncRule{{From: src, To: "/app"}},
+		Terminal: "bash",
+	}}
+
+	err := startDevFeatures(context.Background(), dc, "ns", targets, &bytes.Buffer{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "initial sync failed")
+	assert.Equal(t, 0, dc.TerminalCalls(), "terminal must not start when the initial sync failed")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.NotContains(t, successes, "initial sync complete")
+}
+
+type recordingSpinner struct{ onSuccess func(string) }
+
+func (r recordingSpinner) Success(args ...any) {
+	if len(args) > 0 {
+		if s, ok := args[0].(string); ok {
+			r.onSuccess(s)
+		}
+	}
+}
+func (recordingSpinner) Fail(_ ...any) {}
+
+func noRetryBackoff(t *testing.T) {
+	t.Helper()
+	orig := sessionRetryBackoff
+	sessionRetryBackoff = 0
+	t.Cleanup(func() { sessionRetryBackoff = orig })
+}
+
+// The health watcher's error for a crashed container contains "exit code 1";
+// it used to be mistaken for the user's terminal command exiting, so ct dev
+// quit instead of reconnecting once the container was restarted.
+func TestStartDevFeatures_ReconnectsWhenContainerCrashes(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	var execCalls int32
+	dc.ExecFn = func(ctx context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		if atomic.AddInt32(&execCalls, 1) == 1 {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	var watchCalls int32
+	dc.WatchPodFn = func(ctx context.Context, _ string, _ string) error {
+		if atomic.AddInt32(&watchCalls, 1) == 1 {
+			return errors.New(`pod "web-x": container "app" has terminated (Error, exit code 1)`)
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+	assert.Equal(t, 2, dc.TerminalCalls(), "a crashed container must lead to a reconnect, not to exiting ct dev")
+}
+
+// "waiting for pod to restart" used to retry immediately: five attempts were
+// burnt within a second, too fast to survive a network blip or a restart.
+func TestStartDevFeatures_BacksOffBetweenAttempts(t *testing.T) {
+	silenceDevLog(t)
+	orig := sessionRetryBackoff
+	sessionRetryBackoff = 60 * time.Millisecond
+	t.Cleanup(func() { sessionRetryBackoff = orig })
+
+	dc := newDevCluster()
+	var mu sync.Mutex
+	var calls []time.Time
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, time.Now())
+		if len(calls) < 3 {
+			return errors.New("connection lost")
+		}
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+	require.Len(t, calls, 3)
+	assert.GreaterOrEqual(t, calls[1].Sub(calls[0]), 60*time.Millisecond)
+	assert.GreaterOrEqual(t, calls[2].Sub(calls[1]), 120*time.Millisecond, "backoff should grow")
+}
+
+func TestStartDevFeatures_CancelDuringBackoffReturnsPromptly(t *testing.T) {
+	silenceDevLog(t)
+	orig := sessionRetryBackoff
+	sessionRetryBackoff = time.Hour
+	t.Cleanup(func() { sessionRetryBackoff = orig })
+
+	dc := newDevCluster()
+	ctx, cancel := context.WithCancel(context.Background())
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		time.AfterFunc(20*time.Millisecond, cancel)
+		return errors.New("connection lost")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- startDevFeatures(ctx, dc, "ns", []Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{})
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("startDevFeatures did not return after cancel during backoff")
+	}
+}
+
+// Ctrl+C (the parent context being cancelled) is how a dev session ends; it
+// used to surface as "starting dev features: context canceled" and exit 1.
+func TestStartDevFeatures_CancelledWhileWaitingForPodIsNotAnError(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	dc.WaitPodFn = func(ctx context.Context, _ string, _ k8s.Selector) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+
+	require.NoError(t, startDevFeatures(ctx, dc, "ns", []Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+}
+
+// With Ctrl+C cancelling ctx (instead of killing the process), a prompt()
+// blocked on stdin must give up when ctx is cancelled.
+func TestRun_CancelInterruptsPrompt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dev.ct"),
+		[]byte(`const user = prompt("Username?")
+config({ namespace: "dev-" + user })
+`), 0o644))
+
+	stdin, stdinWriter := io.Pipe() // never written: the prompt blocks
+	t.Cleanup(func() { _ = stdinWriter.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, RunOpts{Dir: dir, Stdin: stdin, Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	}()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "interrupted")
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run kept waiting for prompt input after ctx was cancelled")
+	}
+}
+
+func TestConvertTargets_RejectsOutOfRangePorts(t *testing.T) {
+	for _, ports := range [][]interface{}{
+		{int64(0)},
+		{int64(-1)},
+		{int64(70000)},
+		{[]interface{}{int64(8080), int64(0)}},
+		{[]interface{}{int64(65536), int64(80)}},
+	} {
+		_, err := convertTargets([]engine.RawDevTarget{{Name: "web", Ports: ports}})
+		require.Error(t, err, "ports %v", ports)
+		assert.Contains(t, err.Error(), "1-65535")
+	}
+}
+
+// Two rules forwarding the same local port can never both listen; the
+// second port-forward used to retry forever.
+func TestConvertTargets_RejectsDuplicateLocalPorts(t *testing.T) {
+	_, err := convertTargets([]engine.RawDevTarget{
+		{Name: "web", Ports: []interface{}{int64(8080)}},
+		{Name: "api", Ports: []interface{}{[]interface{}{int64(8080), int64(3000)}}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local port 8080")
+	assert.Contains(t, err.Error(), `"web"`)
+	assert.Contains(t, err.Error(), `"api"`)
+
+	_, err = convertTargets([]engine.RawDevTarget{
+		{Name: "web", Ports: []interface{}{int64(8080), []interface{}{int64(8080), int64(80)}}},
+	})
+	require.Error(t, err)
+}
+
+func TestConvertTargets_RejectsMistypedSyncOptions(t *testing.T) {
+	_, err := convertTargets([]engine.RawDevTarget{{Name: "web", Sync: []map[string]interface{}{
+		{"from": "./", "to": "/app", "exclude": "node_modules"},
+	}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync[0].exclude")
+
+	_, err = convertTargets([]engine.RawDevTarget{{Name: "web", Sync: []map[string]interface{}{
+		{"from": "./", "to": "/app", "polling": "true"},
+	}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sync[0].polling")
+}
+
+// {name: "X", value: undefined} used to set the env var to the string "<nil>".
+func TestConvertTargets_EnvValues(t *testing.T) {
+	targets, err := convertTargets([]engine.RawDevTarget{{Name: "web", Env: []map[string]interface{}{
+		{"name": "UNSET", "value": nil},
+		{"name": "MISSING"},
+		{"name": "PORT", "value": int64(8080)},
+		{"name": "DEBUG", "value": true},
+	}}})
+	require.NoError(t, err)
+	assert.Equal(t, []EnvVar{{"UNSET", ""}, {"MISSING", ""}, {"PORT", "8080"}, {"DEBUG", "true"}}, targets[0].Env)
+
+	_, err = convertTargets([]engine.RawDevTarget{{Name: "web", Env: []map[string]interface{}{
+		{"name": "OBJ", "value": map[string]interface{}{"a": int64(1)}},
+	}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "env[0].value")
+}
+
+const webDeploymentCT = `
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: "web" },
+  spec: {
+    selector: { matchLabels: { app: "web" } },
+    template: {
+      metadata: { labels: { app: "web" } },
+      spec: { containers: [{ name: "app", image: "web:1" }] },
+    },
+  },
+});
+`
+
+func writeDevProject(t *testing.T, devCT string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(webDeploymentCT), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dev.ct"), []byte(devCT), 0o644))
+	return dir
+}
+
+func useFakeCluster(t *testing.T, cluster k8s.Cluster) {
+	t.Helper()
+	orig := newClusterFn
+	newClusterFn = func(string, string) (k8s.Cluster, error) { return cluster, nil }
+	t.Cleanup(func() { newClusterFn = orig })
+}
+
+// Relative sync sources were resolved against the process working directory
+// instead of the project directory (RunOpts.Dir).
+func TestRun_SyncFromIsRelativeToProjectDir(t *testing.T) {
+	silenceDevLog(t)
+	t.Setenv("HOME", t.TempDir())
+	dir := writeDevProject(t, `config({ namespace: "dev" })
+dev("web", { sync: [{ from: "./src", to: "/app" }], terminal: "sh" })
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src", "index.js"), []byte("ok"), 0o644))
+
+	fake := k8stest.NewFake()
+	fake.AddPod(&k8stest.FakePod{Name: "web-x", Namespace: "dev", Labels: k8s.Selector{"app": "web"}, Healthy: true, Containers: []string{"app"}})
+	var mu sync.Mutex
+	var tarred []string
+	fake.ExecHook = func(_, _ string, opts k8s.ExecOpts) error {
+		if opts.Command[0] == "tar" {
+			body, err := io.ReadAll(opts.Stdin)
+			if err != nil {
+				return err
+			}
+			tr := tar.NewReader(bytes.NewReader(body))
+			for h, err := tr.Next(); err == nil; h, err = tr.Next() {
+				mu.Lock()
+				tarred = append(tarred, h.Name)
+				mu.Unlock()
+			}
+		}
+		return nil
+	}
+	useFakeCluster(t, fake)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := Run(ctx, RunOpts{Dir: dir, Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	require.NoError(t, err)
+	require.NoError(t, ctx.Err(), "Run should end with the terminal, not by timeout")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Contains(t, tarred, "index.js")
+}
+
+// A sync source that does not exist or is a file used to fail only after the
+// resources had been applied, with "stat ...: no such file or directory" or
+// "watch root must be a directory" and no hint which rule was wrong.
+func TestRun_InvalidSyncSourceFailsBeforeApply(t *testing.T) {
+	silenceDevLog(t)
+	t.Setenv("HOME", t.TempDir())
+	dir := writeDevProject(t, `config({ namespace: "dev" })
+dev("web", { sync: [{ from: "./package.json", to: "/app/package.json" }] })
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	fake := k8stest.NewFake()
+	useFakeCluster(t, fake)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := Run(ctx, RunOpts{Dir: dir, Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `target "web": sync[0].from`)
+	assert.Contains(t, err.Error(), "not a directory")
+	assert.Empty(t, fake.ApplyCalls, "nothing should be applied for an invalid dev.ct")
+}
+
+// runDevSession used to swap the global os.Stderr for /dev/null while the
+// features were already running. client-go reports port-forward errors via
+// klog, which writes to os.Stderr from those goroutines: a data race (and the
+// /dev/null file was closed under late writers).
+func TestRunDevSession_TerminalModeDoesNotRaceOnStderr(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	dc.PortForwardFn = func(ctx context.Context, _ string, _ k8s.Selector, _ []k8s.PortRule) error {
+		for ctx.Err() == nil {
+			fmt.Fprint(os.Stderr, "") // what klog's stderr output does on every log line
+			time.Sleep(time.Millisecond)
+		}
+		return ctx.Err()
+	}
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		time.Sleep(20 * time.Millisecond)
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns", []Target{{
+		Name: "web", Selector: map[string]string{"app": "web"},
+		Ports:    []PortRule{{Local: 8080, Remote: 80}},
+		Terminal: "bash",
+	}}, &bytes.Buffer{}))
+}
+
+// Library logging (klog from client-go, the standard logger) must not draw
+// over the interactive terminal, and must work again afterwards.
+func TestRunDevSession_SilencesLibraryLogsOnlyDuringTerminal(t *testing.T) {
+	silenceDevLog(t)
+	var stdLog bytes.Buffer
+	origLog := log.Writer()
+	log.SetOutput(&stdLog)
+	t.Cleanup(func() { log.SetOutput(origLog) })
+
+	klogOut := &syncBuffer{}
+	klog.LogToStderr(false)
+	klog.SetOutput(klogOut)
+	t.Cleanup(func() {
+		klog.SetOutput(io.Discard)
+		klog.LogToStderr(true)
+	})
+
+	dc := newDevCluster()
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		log.Print("std-during-terminal")
+		klog.Info("klog-during-terminal")
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+
+	log.Print("std-after")
+	klog.Info("klog-after")
+	klog.Flush()
+	assert.NotContains(t, stdLog.String(), "during-terminal")
+	assert.Contains(t, stdLog.String(), "std-after")
+	assert.NotContains(t, klogOut.String(), "during-terminal")
+	assert.Contains(t, klogOut.String(), "klog-after")
+}
+
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Log streams of several targets write to the same RunOpts.Stdout from
+// different goroutines; any io.Writer must be safe to pass.
+func TestStartDevFeatures_LogStreamsShareStdoutSafely(t *testing.T) {
+	silenceDevLog(t)
+
+	fake := k8stest.NewFake()
+	for _, name := range []string{"api", "web"} {
+		fake.AddPod(&k8stest.FakePod{
+			Name: name + "-x", Namespace: "ns", Labels: k8s.Selector{"app": name}, Healthy: true,
+			LogContent: strings.Repeat(name+" log line\n", 200),
+		})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	require.NoError(t, startDevFeatures(ctx, fake, "ns", []Target{
+		{Name: "api", Selector: map[string]string{"app": "api"}},
+		{Name: "web", Selector: map[string]string{"app": "web"}},
+	}, &out))
+	assert.Equal(t, 200, strings.Count(out.String(), "api log line\n"))
+	assert.Equal(t, 200, strings.Count(out.String(), "web log line\n"))
+}
+
+func TestConvertTargets_RejectsDuplicateAndEmptyNames(t *testing.T) {
+	_, err := convertTargets([]engine.RawDevTarget{{Name: "web"}, {Name: "web"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"web" is defined more than once`)
+
+	_, err = convertTargets([]engine.RawDevTarget{{Name: " "}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name")
+}
+
+// A typo in an explicitly given --env-file used to be ignored silently, so
+// env() quietly returned its defaults.
+func TestLoadEnvVars_MissingRequiredFileIsAnError(t *testing.T) {
+	_, err := loadEnvVars(t.TempDir(), ".env.dvelopment", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ".env.dvelopment")
+
+	_, err = loadEnvVars(t.TempDir(), ".env", false)
+	require.NoError(t, err, "the default .env is optional")
+}
+
+// main.ct was rendered without the release name, so `Release.name` was ""
+// under ct dev while ct template/apply set it: names built from it differed
+// (e.g. "-web" instead of "dev-web") and dev targets did not match.
+func TestRun_MainCtSeesReleaseName(t *testing.T) {
+	silenceDevLog(t)
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(`
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: Release.name + "-web" },
+  spec: {
+    selector: { matchLabels: { app: "web" } },
+    template: { metadata: { labels: { app: "web" } }, spec: { containers: [{ name: "app", image: "web:1" }] } },
+  },
+});
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dev.ct"), []byte(`config({ namespace: "dev" })
+dev("my-dev-web", { terminal: "sh" })
+`), 0o644))
+
+	fake := k8stest.NewFake()
+	fake.AddPod(&k8stest.FakePod{Name: "web-x", Namespace: "dev", Labels: k8s.Selector{"app": "web"}, Healthy: true})
+	fake.ExecHook = func(_, _ string, _ k8s.ExecOpts) error { return nil }
+	useFakeCluster(t, fake)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, Run(ctx, RunOpts{Dir: dir, ReleaseName: "my-dev", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}))
+	require.Len(t, fake.ApplyCalls, 1)
+	meta := fake.ApplyCalls[0].Resources[0]["metadata"].(map[string]interface{})
+	assert.Equal(t, "my-dev-web", meta["name"])
+}
+
+// The health watcher watches the pod resolved when the session starts; the
+// terminal used to resolve a pod again by selector and could end up in a
+// different one (e.g. during the rollout triggered by ct dev's own apply),
+// so the watcher killed a healthy terminal or missed its pod dying.
+func TestRunDevSession_TerminalUsesTheWatchedPod(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	var waits int32
+	dc.WaitPodFn = func(context.Context, string, k8s.Selector) (string, error) {
+		if atomic.AddInt32(&waits, 1) == 1 {
+			return "web-old", nil
+		}
+		return "web-new", nil
+	}
+	dc.ExecFn = func(context.Context, string, k8s.Selector, k8s.ExecOpts) error {
+		// Keep the terminal open until the health watcher has started.
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			dc.mu.Lock()
+			started := len(dc.watchedPods) > 0
+			dc.mu.Unlock()
+			if started {
+				break
+			}
+		}
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Selector: map[string]string{"app": "web"}, Terminal: "bash"}}, &bytes.Buffer{}))
+
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	require.Equal(t, []string{"web-old"}, dc.watchedPods)
+	assert.Equal(t, []string{"web-old"}, dc.terminalPods, "the terminal must run in the pod the health watcher watches")
 }

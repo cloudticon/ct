@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 
+	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/fatih/color"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,11 +25,11 @@ import (
 // and require cross-file lookups during reads.
 
 const (
-	managedByLabelKey  = "app.kubernetes.io/managed-by"
-	managedByLabelVal  = "ct"
-	instanceLabelKey   = "ct.cloudticon.com/instance"
-	inventoryDataKey   = "resources"
-	inventoryCMPrefix  = "ct-inventory-"
+	managedByLabelKey = "app.kubernetes.io/managed-by"
+	managedByLabelVal = "ct"
+	instanceLabelKey  = "ct.cloudticon.com/instance"
+	inventoryDataKey  = "resources"
+	inventoryCMPrefix = "ct-inventory-"
 )
 
 // ReleaseInfo summarizes a release tracked in inventory.
@@ -50,7 +52,21 @@ func (c *client) applyRelease(ctx context.Context, namespace, releaseName string
 		return fmt.Errorf("building resource refs: %w", err)
 	}
 
-	orphaned := computeOrphaned(oldRefs, newRefs)
+	defaultNs := namespace
+	if defaultNs == "" {
+		defaultNs = c.Namespace
+	}
+	orphaned := computeOrphaned(oldRefs, newRefs, defaultNs)
+
+	// Track old+new before touching the cluster: if apply fails halfway, the
+	// objects it already created stay in the inventory and a later run can
+	// still prune them. A first install skips this, because the release may
+	// create the namespace the inventory lives in.
+	if added := computeOrphaned(newRefs, oldRefs, defaultNs); len(added) > 0 && len(oldRefs) > 0 {
+		if err := saveInventoryRefs(ctx, c, namespace, releaseName, append(append([]ResourceRef{}, oldRefs...), added...)); err != nil {
+			return fmt.Errorf("saving inventory: %w", err)
+		}
+	}
 
 	if err := c.apply(ctx, resources); err != nil {
 		return fmt.Errorf("applying resources: %w", err)
@@ -106,6 +122,14 @@ func ensureNamespace(ctx context.Context, c *client, namespace string) error {
 // --- Inventory CRUD ---
 
 func saveInventory(ctx context.Context, c *client, namespace, releaseName string, resources []Resource) error {
+	refs, err := resourcesToRefs(resources)
+	if err != nil {
+		return err
+	}
+	return saveInventoryRefs(ctx, c, namespace, releaseName, refs)
+}
+
+func saveInventoryRefs(ctx context.Context, c *client, namespace, releaseName string, refs []ResourceRef) error {
 	if c == nil || c.CoreV1 == nil {
 		return errors.New("k8s client is required")
 	}
@@ -114,11 +138,6 @@ func saveInventory(ctx context.Context, c *client, namespace, releaseName string
 	}
 
 	targetNamespace, err := resolveInventoryNamespace(c, namespace)
-	if err != nil {
-		return err
-	}
-
-	refs, err := resourcesToRefs(resources)
 	if err != nil {
 		return err
 	}
@@ -244,8 +263,10 @@ func listReleases(ctx context.Context, c *client, namespace string, allNamespace
 
 	releases := make([]ReleaseInfo, 0, len(cmList.Items))
 	for _, cm := range cmList.Items {
+		// ConfigMaps a release renders carry the same labels as its
+		// inventory; only ct-inventory-* ones are inventories.
 		releaseName := cm.Labels[instanceLabelKey]
-		if releaseName == "" {
+		if releaseName == "" || !strings.HasPrefix(cm.Name, inventoryCMPrefix) {
 			continue
 		}
 
@@ -325,21 +346,24 @@ func resourcesToRefs(resources []Resource) ([]ResourceRef, error) {
 // --- Prune (orphan detection) ---
 
 // computeOrphaned returns refs that existed before but are no longer present.
-// Comparison key is apiVersion+kind+namespace+name.
-func computeOrphaned(oldRefs, newRefs []ResourceRef) []ResourceRef {
+// Refs are compared by server-side identity: API group (not version), kind,
+// namespace (an empty one means defaultNamespace) and name. Comparing raw
+// apiVersions and namespaces pruned the object just applied when an HPA
+// moved from autoscaling/v1 to v2 or a release gained an explicit -n.
+func computeOrphaned(oldRefs, newRefs []ResourceRef, defaultNamespace string) []ResourceRef {
 	if len(oldRefs) == 0 {
 		return []ResourceRef{}
 	}
 
 	newSet := make(map[string]struct{}, len(newRefs))
 	for _, ref := range newRefs {
-		newSet[resourceRefKey(ref)] = struct{}{}
+		newSet[resourceRefKey(ref, defaultNamespace)] = struct{}{}
 	}
 
 	orphaned := make([]ResourceRef, 0)
 	seen := make(map[string]struct{}, len(oldRefs))
 	for _, ref := range oldRefs {
-		key := resourceRefKey(ref)
+		key := resourceRefKey(ref, defaultNamespace)
 		if _, alreadyAdded := seen[key]; alreadyAdded {
 			continue
 		}
@@ -353,8 +377,15 @@ func computeOrphaned(oldRefs, newRefs []ResourceRef) []ResourceRef {
 	return orphaned
 }
 
-func resourceRefKey(ref ResourceRef) string {
-	return fmt.Sprintf("%s|%s|%s|%s", ref.APIVersion, ref.Kind, ref.Namespace, ref.Name)
+func resourceRefKey(ref ResourceRef, defaultNamespace string) string {
+	ns := ref.Namespace
+	switch {
+	case manifest.IsClusterScoped(ref.APIVersion, ref.Kind):
+		ns = ""
+	case ns == "":
+		ns = defaultNamespace
+	}
+	return fmt.Sprintf("%s|%s|%s|%s", manifest.Group(ref.APIVersion), ref.Kind, ns, ref.Name)
 }
 
 // --- Label injection ---

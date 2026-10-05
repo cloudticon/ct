@@ -1,26 +1,27 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/cloudticon/ct/pkg/manifest"
 	"gopkg.in/yaml.v3"
 )
 
 type Resource = map[string]interface{}
 
 func Serialize(resources []Resource, format string) (string, error) {
-	cleaned := make([]Resource, len(resources))
-	for i, r := range resources {
-		cleaned[i] = cleanNilFields(r).(Resource)
+	for _, r := range resources {
+		manifest.Clean(r)
 	}
 
 	switch format {
 	case "yaml", "":
-		return serializeYAML(cleaned)
+		return serializeYAML(resources)
 	case "json":
-		return serializeJSON(cleaned)
+		return serializeJSON(resources)
 	default:
 		return "", fmt.Errorf("unsupported output format: %s", format)
 	}
@@ -29,50 +30,27 @@ func Serialize(resources []Resource, format string) (string, error) {
 func serializeYAML(resources []Resource) (string, error) {
 	var docs []string
 	for _, r := range resources {
-		data, err := yaml.Marshal(r)
-		if err != nil {
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(r); err != nil {
 			return "", fmt.Errorf("yaml marshal error: %w", err)
 		}
-		docs = append(docs, strings.TrimRight(string(data), "\n"))
+		if err := enc.Close(); err != nil {
+			return "", fmt.Errorf("yaml marshal error: %w", err)
+		}
+		docs = append(docs, strings.TrimRight(buf.String(), "\n"))
 	}
 	return strings.Join(docs, "\n---\n") + "\n", nil
 }
 
 func serializeJSON(resources []Resource) (string, error) {
+	if resources == nil {
+		resources = []Resource{}
+	}
 	data, err := json.MarshalIndent(resources, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("json marshal error: %w", err)
 	}
 	return string(data) + "\n", nil
-}
-
-func cleanNilFields(v interface{}) interface{} {
-	switch val := v.(type) {
-	case map[string]interface{}:
-		cleaned := make(map[string]interface{}, len(val))
-		for k, v := range val {
-			cv := cleanNilFields(v)
-			if cv != nil {
-				cleaned[k] = cv
-			}
-		}
-		if len(cleaned) == 0 {
-			return nil
-		}
-		return cleaned
-	case []interface{}:
-		cleaned := make([]interface{}, 0, len(val))
-		for _, item := range val {
-			cv := cleanNilFields(item)
-			if cv != nil {
-				cleaned = append(cleaned, cv)
-			}
-		}
-		if len(cleaned) == 0 {
-			return nil
-		}
-		return cleaned
-	default:
-		return v
-	}
 }

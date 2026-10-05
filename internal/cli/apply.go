@@ -2,11 +2,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/cloudticon/ctts/internal/output"
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/internal/output"
+	"github.com/cloudticon/ct/pkg/diag"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/spf13/cobra"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 type applyOpts struct {
@@ -32,10 +35,9 @@ func newApplyCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "target namespace for resources")
-	cmd.Flags().StringVarP(&opts.valuesFile, "values", "f", "", "path to values file (JSON or YAML, overrides auto-detect)")
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: yaml or json (default: no output)")
-	cmd.Flags().StringArrayVar(&opts.setValues, "set", nil, "override values (e.g. --set replicas=5)")
-	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "skip cache, re-download remote source")
+	addRenderFlags(cmd, &opts.templateOpts)
+	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "re-download the remote source and imported packages instead of using ~/.ct/cache")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
 	cmd.Flags().BoolVar(&opts.createNamespace, "create-namespace", false, "create namespace if it does not exist")
 
@@ -47,12 +49,16 @@ func init() {
 }
 
 func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) error {
+	if err := validateReleaseName(releaseName); err != nil {
+		return err
+	}
 	resolvedDir, err := resolveSourceDirForApply(source, opts.noCache)
 	if err != nil {
 		return err
 	}
 
 	opts.templateOpts.releaseName = releaseName
+	opts.templateOpts.sourceURL = remoteSourceURL(source)
 	resources, err := renderResourcesForApply(resolvedDir, opts.templateOpts)
 	if err != nil {
 		return err
@@ -70,7 +76,7 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 	}
 
 	if err := cluster.ApplyRelease(cmd.Context(), opts.namespace, releaseName, resources); err != nil {
-		return fmt.Errorf("apply failed: %w", err)
+		return applyError(err)
 	}
 
 	if opts.outputFmt != "" {
@@ -82,6 +88,20 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 	}
 
 	return nil
+}
+
+// applyError turns common cluster errors into diagnostics with a next step.
+func applyError(err error) error {
+	var status *apierrors.StatusError
+	if errors.As(err, &status) && apierrors.IsNotFound(err) && status.ErrStatus.Details != nil &&
+		status.ErrStatus.Details.Kind == "namespaces" {
+		return diag.List{{
+			Code:    diag.CodeNamespaceNotFound,
+			Message: fmt.Sprintf("apply failed: %v", err),
+			Hint:    "pass --create-namespace, or register a Namespace object in main.ct",
+		}}
+	}
+	return fmt.Errorf("apply failed: %w", err)
 }
 
 func ensureApplyNamespace(ctx context.Context, cluster k8s.Cluster, namespace string, createNamespace bool) error {

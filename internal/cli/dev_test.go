@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudticon/ctts/internal/dev"
+	"github.com/cloudticon/ct/internal/dev"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,7 +88,28 @@ func TestRunDev_PassesOptionsToRunner(t *testing.T) {
 	assert.Equal(t, "my-dev", captured.ReleaseName)
 	assert.True(t, captured.Delete)
 	assert.True(t, captured.CreateNamespace)
+	assert.False(t, captured.EnvFileRequired, "flag not set on the command line: the default .env is optional")
 	assert.Same(t, stdin, captured.Stdin)
 	assert.Same(t, stdout, captured.Stdout)
 	assert.Same(t, stderr, captured.Stderr)
+}
+
+// An --env-file given on the command line must exist; only the default
+// .env is optional.
+func TestDevCmd_ExplicitEnvFileIsRequired(t *testing.T) {
+	origRunner := runDevMode
+	t.Cleanup(func() { runDevMode = origRunner })
+	var captured dev.RunOpts
+	runDevMode = func(_ context.Context, opts dev.RunOpts) error {
+		captured = opts
+		return nil
+	}
+
+	cmd := newDevCmd()
+	cmd.SetArgs([]string{"--env-file", ".env.staging"})
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, ".env.staging", captured.EnvFile)
+	assert.True(t, captured.EnvFileRequired)
 }

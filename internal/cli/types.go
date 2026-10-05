@@ -7,12 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
-	"github.com/cloudticon/ctts/internal/dev"
-	"github.com/cloudticon/ctts/pkg/cache"
-	"github.com/cloudticon/ctts/pkg/engine"
-	"github.com/cloudticon/ctts/pkg/packages"
+	"github.com/cloudticon/ct/internal/dev"
+	"github.com/cloudticon/ct/pkg/cache"
+	"github.com/cloudticon/ct/pkg/engine"
+	"github.com/cloudticon/ct/pkg/packages"
 	"github.com/spf13/cobra"
 )
 
@@ -75,13 +76,9 @@ func runTypes(cmd *cobra.Command, dir string, opts typesOpts) error {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
-	valuesPath := resolveValuesPath(absDir, "")
-	var values map[string]interface{}
-	if valuesPath != "" {
-		values, err = engine.LoadValuesFile(valuesPath, nil)
-		if err != nil {
-			return fmt.Errorf("loading values: %w", err)
-		}
+	values, err := engine.LoadValues(engine.ValuesOpts{Files: resolveValuesFiles(absDir, nil)})
+	if err != nil {
+		return fmt.Errorf("loading values: %w", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(outDir, "values.d.ts"), []byte(generateValuesDts(values)), 0o644); err != nil {
@@ -121,7 +118,7 @@ func resolveURLImports(entryPath string) error {
 	}
 
 	for _, imp := range imports {
-		rawURL, ok := importToURL(imp.Path)
+		rawURL, ok := packages.ImportURL(imp.Path)
 		if !ok {
 			continue
 		}
@@ -130,22 +127,6 @@ func resolveURLImports(entryPath string) error {
 		}
 	}
 	return nil
-}
-
-func importToURL(importPath string) (string, bool) {
-	if packages.IsURLImport(importPath) {
-		return importPath, true
-	}
-	if !packages.IsGitPackage(importPath) {
-		return "", false
-	}
-	pkgWithVersion, _ := packages.SplitPackagePath(importPath)
-	pkg, version := packages.SplitPackageVersion(pkgWithVersion)
-	url := "https://" + pkg
-	if version != "" {
-		url += "@" + version
-	}
-	return url, true
 }
 
 func projectHash(absPath string) string {
@@ -166,8 +147,17 @@ func generateValuesDts(values map[string]interface{}) string {
 
 func writeObjectFields(buf *strings.Builder, obj map[string]interface{}, indent string) {
 	for _, k := range sortedKeys(obj) {
-		fmt.Fprintf(buf, "%s%s: %s;\n", indent, k, inferTSType(obj[k], indent))
+		fmt.Fprintf(buf, "%s%s: %s;\n", indent, tsPropertyName(k), inferTSType(obj[k], indent))
 	}
+}
+
+// tsPropertyName quotes keys that aren't identifiers, e.g. annotation keys
+// like "nginx.ingress.kubernetes.io/rewrite-target".
+func tsPropertyName(key string) string {
+	if engine.IsValidJSIdentifier(key) {
+		return key
+	}
+	return strconv.Quote(key)
 }
 
 func inferTSType(v interface{}, indent string) string {
@@ -245,8 +235,7 @@ func collectUniqueWorkloadNames(dir string) []string {
 		return nil
 	}
 
-	valuesPath := resolveValuesPath(dir, "")
-	values, err := loadValuesIfPresent(valuesPath, nil)
+	values, err := engine.LoadValues(engine.ValuesOpts{Files: resolveValuesFiles(dir, nil)})
 	if err != nil {
 		return nil
 	}
@@ -254,6 +243,10 @@ func collectUniqueWorkloadNames(dir string) []string {
 	resources, err := engine.Execute(engine.ExecuteOpts{
 		JSCode: js,
 		Values: values,
+		// ct dev's default --name, so names built from Release.name match
+		// what ct dev renders.
+		ReleaseName: "dev",
+		Timeout:     renderTimeout,
 	})
 	if err != nil {
 		return nil
@@ -329,9 +322,11 @@ func generateDevDts(resourceNames, envKeys []string) string {
 
 	buf.WriteString("declare function env(name: CtEnvKey): string;\n")
 	buf.WriteString("declare function env(name: CtEnvKey, defaultValue: number): number;\n")
+	buf.WriteString("declare function env(name: CtEnvKey, defaultValue: boolean): boolean;\n")
 	buf.WriteString("declare function env(name: CtEnvKey, defaultValue: string): string;\n")
 	buf.WriteString("declare function env(name: string): string;\n")
 	buf.WriteString("declare function env(name: string, defaultValue: number): number;\n")
+	buf.WriteString("declare function env(name: string, defaultValue: boolean): boolean;\n")
 	buf.WriteString("declare function env(name: string, defaultValue: string): string;\n")
 
 	return buf.String()

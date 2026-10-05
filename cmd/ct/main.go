@@ -1,17 +1,16 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 
-	"github.com/cloudticon/ctts/internal/cli"
+	"github.com/cloudticon/ct/internal/cli"
 )
 
 func main() {
 	log.SetFlags(0)
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		cli.PrintError(os.Stderr, err)
 		os.Exit(1)
 	}
 }

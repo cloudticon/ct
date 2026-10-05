@@ -5,7 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cloudticon/ctts/pkg/engine"
+	"github.com/cloudticon/ct/pkg/diag"
+	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +46,8 @@ func TestBundle_InvalidTS(t *testing.T) {
 	tr := engine.NewTranspiler("")
 	_, err = tr.Bundle(entry)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "esbuild")
+	assert.Contains(t, err.Error(), "main.ts:1:6")
+	assert.Contains(t, err.Error(), "[syntax]")
 }
 
 func TestBundle_IIFEFormat(t *testing.T) {
@@ -266,7 +268,7 @@ func TestBundle_RejectsAsyncFunction(t *testing.T) {
 	_, err = tr.Bundle(entry)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "async")
-	assert.Contains(t, err.Error(), "line 1")
+	assert.Contains(t, err.Error(), "main.ct:1:1")
 }
 
 func TestBundle_RejectsAwait(t *testing.T) {
@@ -279,7 +281,7 @@ func TestBundle_RejectsAwait(t *testing.T) {
 	_, err = tr.Bundle(entry)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "await")
-	assert.Contains(t, err.Error(), "line 2")
+	assert.Contains(t, err.Error(), "main.ct:2:14")
 }
 
 func TestBundle_RejectsAsyncArrow(t *testing.T) {
@@ -339,4 +341,160 @@ console.log(entry);
 	js, err := tr.Bundle(entry)
 	require.NoError(t, err)
 	assert.Contains(t, js, "ts-wins")
+}
+
+func TestBundle_AsyncWordsInCommentsStringsAndNamesAreFine(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`// we never await anything here
+/* async is mentioned in a comment */
+const name = "async-worker";
+const awaitingApproval = true;
+const tpl = `+"`await ${name}`"+`;
+function* gen() { yield 1; }
+console.log(name, awaitingApproval, tpl, [...gen()]);
+`), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+	require.NoError(t, err)
+}
+
+func TestBundle_ResolvesRelativeImportsWithoutExtension(t *testing.T) {
+	dir := t.TempDir()
+	writeTS(t, dir, "lib/helper.ct", `export const helper = () => "from-ct";`)
+	writeTS(t, dir, "lib/util/index.ts", `export const util = () => "from-index";`)
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { helper } from "./lib/helper";
+import { util } from "./lib/util";
+console.log(helper(), util());
+`), 0o644))
+
+	js, err := engine.NewTranspiler(dir).Bundle(entry)
+	require.NoError(t, err)
+	assert.Contains(t, js, "from-ct")
+	assert.Contains(t, js, "from-index")
+}
+
+func TestBundle_ReportsUnresolvedImportsWithHints(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import _ from "lodash";
+import { x } from "./missing";
+console.log(_, x);
+`), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 2)
+	assert.Equal(t, diag.CodeImport, list[0].Code)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 1, list[0].Line)
+	assert.Contains(t, list[0].Hint, "doesn't use npm")
+	assert.Equal(t, 2, list[1].Line)
+	assert.Contains(t, list[1].Hint, "relative to the importing file")
+}
+
+func TestBundle_RelativeEntryPointAndProjectDir(t *testing.T) {
+	dir := t.TempDir()
+	writeTS(t, dir, "app/main.ct", `import { v } from "./v"; console.log(v);`)
+	writeTS(t, dir, "app/v.ct", `export const v = "relative-ok";`)
+	t.Chdir(dir)
+
+	js, err := engine.NewTranspiler("app").Bundle(filepath.Join("app", "main.ct"))
+	require.NoError(t, err)
+	assert.Contains(t, js, "relative-ok")
+}
+
+func TestBundle_RefreshPackagesInvalidatesCacheOncePerBundle(t *testing.T) {
+	// invalid.invalid never resolves, so the re-download fails fast offline.
+	pkgDir := setupFakeCache(t, "invalid.invalid", "someone", "fresh", "main")
+	writeTS(t, pkgDir, "index.ts", `export const v = "stale";`)
+
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { v } from "invalid.invalid/someone/fresh@main"; console.log(v);`), 0o644))
+
+	tr := engine.NewTranspiler(dir)
+	js, err := tr.Bundle(entry)
+	require.NoError(t, err)
+	assert.Contains(t, js, "stale", "cache is trusted by default")
+
+	tr.RefreshPackages = true
+	_, err = tr.Bundle(entry)
+	require.Error(t, err, "the stale copy is dropped and a re-download is attempted")
+	assert.NoDirExists(t, pkgDir)
+}
+
+func TestBundle_PackageSubPathCannotLeaveThePackage(t *testing.T) {
+	pkgDir := setupFakeCache(t, "github.com", "someone", "pkg", "v1")
+	writeTS(t, pkgDir, "index.ts", `export const ok = 1;`)
+	writeTS(t, filepath.Dir(pkgDir), "secret.ts", `export const secret = "leaked";`)
+
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { secret } from "github.com/someone/pkg@v1/../secret"; console.log(secret);`), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "leaves its package")
+}
+
+func TestBundle_SyntaxErrorNextToAsyncLikeNameIsASyntaxError(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte("const o = { name: workerName asyncWorker: true };\n"), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeSyntax, list[0].Code)
+	assert.Contains(t, list[0].Message, `Expected "}" but found "asyncWorker"`)
+}
+
+func TestBundle_RejectsEveryAsyncForm(t *testing.T) {
+	for _, src := range []string{
+		"async function f() {}",
+		"const f = async () => 1;",
+		"const x = await g();",
+		"async function* gen() {}",
+		"class A { async m() {} }",
+	} {
+		dir := t.TempDir()
+		entry := filepath.Join(dir, "main.ct")
+		require.NoError(t, os.WriteFile(entry, []byte(src+"\n"), 0o644))
+
+		_, err := engine.NewTranspiler(dir).Bundle(entry)
+
+		var list diag.List
+		require.ErrorAs(t, err, &list, src)
+		assert.Equal(t, diag.CodeAsync, list[0].Code, src)
+	}
+}
+
+func TestDisplayPath_ProjectInsideCacheStaysRelative(t *testing.T) {
+	pkgDir := setupFakeCache(t, "github.com", "acme", "infra", "v1")
+	other := filepath.Join(filepath.Dir(filepath.Dir(pkgDir)), "cloudticon", "k8s@master", "resource.ts")
+
+	assert.Equal(t, "main.ct", engine.DisplayPath(filepath.Join(pkgDir, "main.ct"), pkgDir))
+	assert.Equal(t, "github.com/cloudticon/k8s@master/resource.ts", engine.DisplayPath(other, pkgDir))
+}
+
+func TestBundle_RefreshKeepsPackagesMarkedFresh(t *testing.T) {
+	// A remote source importing its own repository: the CLI already
+	// re-downloaded it, so refreshing must not delete it mid-bundle.
+	pkgDir := setupFakeCache(t, "github.com", "acme", "infra", "v1")
+	writeTS(t, pkgDir, "lib/x.ts", `export const x = "from-self";`)
+	writeTS(t, pkgDir, "main.ct", `import { x } from "github.com/acme/infra@v1/lib/x"; console.log(x);`)
+
+	tr := engine.NewTranspiler(pkgDir)
+	tr.RefreshPackages = true
+	tr.MarkFresh("https://github.com/acme/infra@v1")
+	js, err := tr.Bundle(filepath.Join(pkgDir, "main.ct"))
+
+	require.NoError(t, err)
+	assert.Contains(t, js, "from-self")
+	assert.DirExists(t, pkgDir)
 }

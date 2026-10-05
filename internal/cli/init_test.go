@@ -44,3 +44,29 @@ func TestInitCmd_DefaultDir(t *testing.T) {
 	assert.FileExists(t, filepath.Join(tmpDir, "main.ct"))
 	assert.FileExists(t, filepath.Join(tmpDir, "values.json"))
 }
+
+func TestInitCmd_DoesNotOverwriteExistingProject(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "values.json"), []byte(`{"mine":true}`), 0o644))
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{"--dir", dir})
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	content, _ := os.ReadFile(filepath.Join(dir, "values.json"))
+	assert.Equal(t, `{"mine":true}`, string(content))
+}
+
+func TestInitCmd_DirectoryArgument(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "myproject")
+
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{projectDir})
+	cmd.SetOut(new(bytes.Buffer))
+
+	require.NoError(t, cmd.Execute())
+	assert.FileExists(t, filepath.Join(projectDir, "main.ct"))
+}

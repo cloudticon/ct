@@ -31,6 +31,30 @@ func TestOrderForDelete_SafetyOrder(t *testing.T) {
 	}, ordered)
 }
 
+func TestOrderForDelete_ReversesInstallOrderWithCustomResourcesFirst(t *testing.T) {
+	ref := func(apiVersion, kind, name string) ResourceRef {
+		return ResourceRef{APIVersion: apiVersion, Kind: kind, Name: name, Namespace: "team"}
+	}
+	input := []ResourceRef{
+		{APIVersion: "v1", Kind: "Namespace", Name: "team"},
+		ref("v1", "ConfigMap", "cfg"),
+		{APIVersion: "apiextensions.k8s.io/v1", Kind: "CustomResourceDefinition", Name: "widgets.example.com"},
+		ref("v1", "Service", "web"),
+		ref("apps/v1", "Deployment", "web"),
+		ref("example.com/v1", "Widget", "w1"),
+		ref("v1", "ConfigMap", "ct-inventory-e2e"),
+	}
+
+	var kinds []string
+	for _, r := range orderForDelete(input) {
+		kinds = append(kinds, r.Kind+"/"+r.Name)
+	}
+	assert.Equal(t, []string{
+		"Widget/w1", "Deployment/web", "Service/web", "CustomResourceDefinition/widgets.example.com",
+		"ConfigMap/cfg", "Namespace/team", "ConfigMap/ct-inventory-e2e",
+	}, kinds)
+}
+
 func TestDelete_ContinuesOnNotFound(t *testing.T) {
 	c, dynClient := newTestClient(t, []*metav1.APIResourceList{
 		{

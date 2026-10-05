@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
-	"github.com/cloudticon/ctts/internal/scaffold"
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/internal/scaffold"
+	"github.com/cloudticon/ct/pkg/diag"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestApplyCmd_MissingMainCt(t *testing.T) {
@@ -78,14 +82,15 @@ func TestApplyCmd_UsageShowsTwoArgs(t *testing.T) {
 
 func TestApplyCmd_MissingMainCt_WithReleaseName(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "project")
-	require.NoError(t, scaffold.Init(dir))
+	_, err := scaffold.Init(dir, scaffold.Options{})
+	require.NoError(t, err)
 
 	cmd := newApplyCmd()
 	cmd.SetArgs([]string{"prod-release", t.TempDir()})
 	cmd.SetOut(new(bytes.Buffer))
 	cmd.SetErr(new(bytes.Buffer))
 
-	err := cmd.Execute()
+	err = cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "entry point not found")
 }
@@ -161,4 +166,20 @@ func TestRunApply_CreatesNamespaceAndAppliesRelease(t *testing.T) {
 	labels, ok := meta["labels"].(map[string]interface{})
 	require.True(t, ok, "release labels should be injected onto resource metadata")
 	assert.Equal(t, "my-release", labels["ct.cloudticon.com/instance"])
+}
+
+func TestApplyError_MissingNamespaceGetsHint(t *testing.T) {
+	notFound := apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "ghost")
+
+	err := applyError(fmt.Errorf("applying resources: %w", notFound))
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, "namespace-not-found", list[0].Code)
+	assert.Contains(t, list[0].Hint, "--create-namespace")
+}
+
+func TestApplyError_OtherErrorsPassThrough(t *testing.T) {
+	err := applyError(errors.New("boom"))
+	assert.EqualError(t, err, "apply failed: boom")
 }

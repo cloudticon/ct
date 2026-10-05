@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudticon/ctts/pkg/k8s"
-	"github.com/cloudticon/ctts/pkg/k8s/k8stest"
+	"github.com/cloudticon/ct/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s/k8stest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -181,4 +181,24 @@ func TestFake_ExecHook_DrivesBehavior(t *testing.T) {
 // Compile-time check that the Fake is usable through the narrow PodExecutor port.
 func TestFake_SatisfiesPodExecutor(t *testing.T) {
 	var _ k8s.PodExecutor = k8stest.NewFake()
+}
+
+func TestFake_ExecValidatesContainerLikeAPIServer(t *testing.T) {
+	f := k8stest.NewFake()
+	f.AddPod(&k8stest.FakePod{
+		Name: "app-x", Namespace: "demo",
+		Labels: k8s.Selector{"app": "demo"}, Healthy: true,
+		Containers: []string{"app", "istio-proxy"},
+	})
+	f.ExecHook = func(ns, pod string, opts k8s.ExecOpts) error { return nil }
+
+	err := f.ExecPod(context.Background(), "demo", "app-x", k8s.ExecOpts{Command: []string{"ls"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "a container name must be specified")
+
+	err = f.ExecPod(context.Background(), "demo", "app-x", k8s.ExecOpts{Command: []string{"ls"}, Container: "nope"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not valid")
+
+	require.NoError(t, f.ExecPod(context.Background(), "demo", "app-x", k8s.ExecOpts{Command: []string{"ls"}, Container: "app"}))
 }

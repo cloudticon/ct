@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -24,7 +26,9 @@ func writeProject(t *testing.T, mainCt string, files map[string]string) string {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(mainCt), 0o644))
 	for name, body := range files {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644))
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 	}
 	return dir
 }
@@ -150,7 +154,7 @@ __ct_resources.push({
   data: { env: Values.env },
 });
 `, map[string]string{
-		"values.json":     `{"env": "default"}`,
+		"values.json":      `{"env": "default"}`,
 		"values-prod.json": `{"env": "production"}`,
 	})
 
@@ -185,14 +189,14 @@ __ct_resources.push({
 	docs := splitYAMLDocs(t, stdout)
 	require.Len(t, docs, 2)
 
-	cm := asMap(t, docs[0]["metadata"])
+	cm := asMap(t, docByKind(t, docs, "ConfigMap")["metadata"])
 	assert.Equal(t, "default-ns", cm["namespace"], "namespaced resource without explicit ns must inherit default")
 
-	secret := asMap(t, docs[1]["metadata"])
+	secret := asMap(t, docByKind(t, docs, "Secret")["metadata"])
 	assert.Equal(t, "explicit-ns", secret["namespace"], "explicit namespace must not be overridden")
 }
 
-func TestTemplateE2E_RendersMultipleResourcesInRegistrationOrder(t *testing.T) {
+func TestTemplateE2E_RendersResourcesInHelmInstallOrder(t *testing.T) {
 	dir := writeProject(t, `
 __ct_resources.push({
   apiVersion: "apps/v1",
@@ -209,16 +213,101 @@ __ct_resources.push({
   kind: "ConfigMap",
   metadata: { name: "web-cm" },
 });
+__ct_resources.push({
+  apiVersion: "v1",
+  kind: "Namespace",
+  metadata: { name: "team" },
+});
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "--validate=false")
+	require.NoError(t, err)
+
+	docs := splitYAMLDocs(t, stdout)
+	require.Len(t, docs, 4)
+	assert.Equal(t, "Namespace", docs[0]["kind"])
+	assert.Equal(t, "ConfigMap", docs[1]["kind"])
+	assert.Equal(t, "Service", docs[2]["kind"])
+	assert.Equal(t, "Deployment", docs[3]["kind"])
+}
+
+func TestTemplateE2E_KeepsEmptyObjects(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({
+  apiVersion: "v1",
+  kind: "Pod",
+  metadata: { name: "p", labels: undefined },
+  spec: {
+    containers: [{ name: "app", image: "nginx", args: [] }],
+    volumes: [{ name: "tmp", emptyDir: {} }],
+  },
+});
 `, nil)
 
 	stdout, _, err := runTemplateE2E(t, "demo", dir)
 	require.NoError(t, err)
 
+	assert.Contains(t, stdout, "emptyDir: {}")
+	assert.Contains(t, stdout, "args: []", "empty arrays stay as written")
+	assert.NotContains(t, stdout, "labels: null")
+}
+
+func TestTemplateE2E_ClusterScopedKindsGetNoNamespace(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({ apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: { name: "reader" } });
+__ct_resources.push({ apiVersion: "v1", kind: "Namespace", metadata: { name: "team" } });
+__ct_resources.push({ apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "sa" } });
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "-n", "prod")
+	require.NoError(t, err)
+
 	docs := splitYAMLDocs(t, stdout)
 	require.Len(t, docs, 3)
-	assert.Equal(t, "Deployment", docs[0]["kind"])
-	assert.Equal(t, "Service", docs[1]["kind"])
-	assert.Equal(t, "ConfigMap", docs[2]["kind"])
+	for _, doc := range docs {
+		meta := asMap(t, doc["metadata"])
+		if doc["kind"] == "ServiceAccount" {
+			assert.Equal(t, "prod", meta["namespace"])
+		} else {
+			assert.NotContains(t, meta, "namespace", "%s is cluster-scoped", doc["kind"])
+		}
+	}
+}
+
+func TestTemplateE2E_RejectsDuplicateResources(t *testing.T) {
+	dir := writeProject(t, `
+for (const i of [1, 2]) {
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" } });
+}
+`, nil)
+
+	_, _, err := runTemplateE2E(t, "demo", dir, "-n", "prod")
+	require.Error(t, err)
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 1)
+	assert.Equal(t, diag.CodeDuplicate, list[0].Code)
+	assert.Equal(t, `ConfigMap "cfg" (namespace "prod")`, list[0].Resource)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 3, list[0].Line, "points at the push inside the loop")
+	assert.Contains(t, list[0].Message, "registered 2 times")
+}
+
+func TestTemplateE2E_YAMLUsesTwoSpaceIndent(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({
+  apiVersion: "v1",
+  kind: "Service",
+  metadata: { name: "svc" },
+  spec: { ports: [{ port: 80, targetPort: 8080 }] },
+});
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir)
+	require.NoError(t, err)
+
+	assert.Contains(t, stdout, "\nmetadata:\n  labels:\n")
+	assert.Contains(t, stdout, "\nspec:\n  ports:\n    - port: 80\n      targetPort: 8080\n")
 }
 
 func TestTemplateE2E_PreservesUserLabelsOverInjected(t *testing.T) {
@@ -277,13 +366,60 @@ this is not valid javascript {{{ syntax error
 `, nil)
 
 	_, _, err := runTemplateE2E(t, "demo", dir)
-	require.Error(t, err)
-	// Either esbuild rejects the syntax or goja fails — either is fine,
-	// but the error must surface to the caller.
-	assert.True(t,
-		strings.Contains(err.Error(), "bundle failed") ||
-			strings.Contains(err.Error(), "JS execution error"),
-		"error should describe bundle/exec failure, got: %v", err)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeSyntax, list[0].Code)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 2, list[0].Line)
+	assert.Contains(t, list[0].LineText, "this is not valid javascript")
+}
+
+func TestTemplateE2E_RuntimeErrorPointsAtCtSource(t *testing.T) {
+	dir := writeProject(t, `import { make } from "./lib/factory";
+
+make({ name: "ok" });
+make({ name: "" });
+`, map[string]string{
+		"lib/factory.ct": `export function make(opts: { name: string }) {
+  if (!opts.name) {
+    throw new Error("name is required");
+  }
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: opts.name } });
+}
+`,
+	})
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	d := list[0]
+	assert.Equal(t, diag.CodeRuntime, d.Code)
+	assert.Contains(t, d.Message, "name is required")
+	assert.Equal(t, "lib/factory.ct", d.File)
+	assert.Equal(t, 3, d.Line)
+	require.GreaterOrEqual(t, len(d.Stack), 2)
+	assert.Equal(t, "main.ct", d.Stack[1].File)
+	assert.Equal(t, 4, d.Stack[1].Line, "the failing call site in main.ct")
+}
+
+func TestTemplateE2E_TimesOutEndlessLoops(t *testing.T) {
+	old := renderTimeout
+	renderTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { renderTimeout = old })
+	dir := writeProject(t, `
+let i = 0;
+while (true) { i++; }
+`, nil)
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeTimeout, list[0].Code)
+	assert.Equal(t, "main.ct", list[0].File)
+	assert.Equal(t, 3, list[0].Line)
 }
 
 func TestTemplateE2E_RejectsUnsupportedOutputFormat(t *testing.T) {
@@ -294,6 +430,120 @@ __ct_resources.push({apiVersion: "v1", kind: "ConfigMap", metadata: { name: "x" 
 	_, _, err := runTemplateE2E(t, "demo", dir, "-o", "xml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "serialization failed")
+}
+
+func TestTemplateE2E_SetWithoutValuesFile(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" }, data: { tag: Values.image.tag } });
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "--set", "image.tag=1.10")
+	require.NoError(t, err)
+
+	docs := splitYAMLDocs(t, stdout)
+	require.Len(t, docs, 1)
+	assert.Equal(t, "1.10", asMap(t, docs[0]["data"])["tag"], "tag stays the string 1.10, not the number 1.1")
+}
+
+func TestTemplateE2E_MergesRepeatedValuesFiles(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({
+  apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" },
+  data: { image: Values.image.repository + ":" + Values.image.tag, replicas: String(Values.replicas) },
+});
+`, map[string]string{
+		"values.yaml":      "image:\n  repository: nginx\n  tag: \"1.25\"\nreplicas: 1\n",
+		"values-prod.yaml": "image:\n  tag: \"1.27\"\n",
+	})
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir,
+		"-f", filepath.Join(dir, "values.yaml"), "-f", filepath.Join(dir, "values-prod.yaml"), "--set-string", "replicas=3")
+	require.NoError(t, err)
+
+	data := asMap(t, splitYAMLDocs(t, stdout)[0]["data"])
+	assert.Equal(t, "nginx:1.27", data["image"])
+	assert.Equal(t, "3", data["replicas"])
+}
+
+func TestTemplateE2E_ValidationPointsAtTheRegisteringLine(t *testing.T) {
+	dir := writeProject(t, `import { configMap } from "./lib/k8s";
+
+configMap({ name: "ok", data: { a: "1" } });
+configMap({ name: "Bad_Name", spec: { data: { a: "1" } } });
+`, map[string]string{
+		"lib/k8s.ct": `export function configMap(args: { name: string; [k: string]: unknown }) {
+  const { name, ...rest } = args;
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name }, ...rest });
+}
+`,
+	})
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 2)
+	for _, d := range list {
+		assert.Equal(t, "lib/k8s.ct", d.File, "%s", d)
+		assert.Equal(t, 3, d.Line, "%s", d)
+		require.Len(t, d.Stack, 1, "the call chain reaches the user's call: %s", d)
+		assert.Equal(t, "main.ct", d.Stack[0].File)
+		assert.Equal(t, 4, d.Stack[0].Line)
+		assert.Equal(t, `ConfigMap "Bad_Name"`, d.Resource)
+	}
+	assert.Equal(t, "metadata.name", list[0].Path)
+	assert.Equal(t, diag.CodeUnknownField, list[1].Code)
+	assert.Equal(t, "spec", list[1].Path)
+}
+
+func TestTemplateE2E_ValidateFalseSkipsValidation(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" }, spec: { x: 1 } });
+`, nil)
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+	require.Error(t, err)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "--validate=false")
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "spec:")
+}
+
+func TestTemplateE2E_RejectsInvalidReleaseName(t *testing.T) {
+	dir := writeProject(t, `__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" } });`, nil)
+
+	_, _, err := runTemplateE2E(t, "My_App", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Contains(t, list[0].Message, `invalid release name "My_App"`)
+}
+
+func TestTemplateE2E_RemoteSourceErrorsPointAtItsOwnFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cacheRoot := filepath.Join(home, ".ct", "cache", "github.com")
+	lib := filepath.Join(cacheRoot, "acme", "lib@v1")
+	project := filepath.Join(cacheRoot, "acme", "infra@v1")
+	require.NoError(t, os.MkdirAll(lib, 0o755))
+	require.NoError(t, os.MkdirAll(project, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(lib, "index.ts"), []byte(`
+export function configMap(args: any) {
+  const { name, ...rest } = args;
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name }, ...rest });
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(project, "main.ct"), []byte(`import { configMap } from "github.com/acme/lib@v1";
+
+configMap({ name: "cfg", spec: {} });
+`), 0o644))
+
+	_, _, err := runTemplateE2E(t, "demo", "github.com/acme/infra@v1")
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, "main.ct", list[0].File, "%s", list[0])
+	assert.Equal(t, 3, list[0].Line)
 }
 
 // --- helpers ---
@@ -312,6 +562,17 @@ func splitYAMLDocs(t *testing.T, raw string) []map[string]interface{} {
 		}
 	}
 	return docs
+}
+
+func docByKind(t *testing.T, docs []map[string]interface{}, kind string) map[string]interface{} {
+	t.Helper()
+	for _, doc := range docs {
+		if doc["kind"] == kind {
+			return doc
+		}
+	}
+	require.Failf(t, "kind not rendered", "no %s in output", kind)
+	return nil
 }
 
 func asMap(t *testing.T, v interface{}) map[string]interface{} {

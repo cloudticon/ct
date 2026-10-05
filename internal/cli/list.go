@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,7 +37,7 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "namespace to search")
 	cmd.Flags().BoolVarP(&opts.allNamespaces, "all-namespaces", "A", false, "list releases across all namespaces")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
-	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: json or yaml (default: table)")
+	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: table, json or yaml")
 
 	return cmd
 }
@@ -56,7 +58,7 @@ func runList(cmd *cobra.Command, opts listOpts) error {
 	}
 
 	switch strings.ToLower(opts.outputFmt) {
-	case "":
+	case "", "table":
 		return writeReleaseTable(cmd.OutOrStdout(), releases)
 	case "json":
 		return writeReleaseJSON(cmd.OutOrStdout(), releases)
@@ -68,6 +70,12 @@ func runList(cmd *cobra.Command, opts listOpts) error {
 }
 
 func writeReleaseTable(w io.Writer, releases []k8s.ReleaseInfo) error {
+	// Colors only for a terminal; pipes, files and agents get plain text.
+	if isColorTerminal(w) {
+		pterm.EnableStyling()
+	} else {
+		pterm.DisableStyling()
+	}
 	data := [][]string{{"NAME", "NAMESPACE", "RESOURCES"}}
 	for _, r := range releases {
 		data = append(data, []string{r.Name, r.Namespace, fmt.Sprintf("%d", r.Resources)})
@@ -104,4 +112,9 @@ func writeReleaseYAML(w io.Writer, releases []k8s.ReleaseInfo) error {
 		return err
 	}
 	return nil
+}
+
+func isColorTerminal(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && os.Getenv("NO_COLOR") == "" && term.IsTerminal(int(f.Fd()))
 }

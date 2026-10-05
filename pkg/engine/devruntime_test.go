@@ -3,7 +3,7 @@ package engine_test
 import (
 	"testing"
 
-	"github.com/cloudticon/ctts/pkg/engine"
+	"github.com/cloudticon/ct/pkg/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -397,4 +397,129 @@ func TestExecuteDev_FullScenario(t *testing.T) {
 	pgPort := pg.Ports[0].([]interface{})
 	assert.Equal(t, int64(43291), pgPort[0])
 	assert.Equal(t, int64(5432), pgPort[1])
+}
+
+func runEnvJS(t *testing.T, js string, env map[string]string) (*engine.DevResult, error) {
+	t.Helper()
+	return engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: js, EnvVars: env, PromptFn: noopPrompt})
+}
+
+// env("DEBUG", false) returned the string "false" when DEBUG=false was set,
+// and every non-empty string is truthy in JS.
+func TestExecuteDev_EnvBooleanDefault(t *testing.T) {
+	js := `
+		const debug = env("DEBUG", false)
+		config({ namespace: "ns", values: { debug: debug, branch: debug ? "on" : "off" } })
+	`
+	for value, want := range map[string]bool{"false": false, "0": false, "no": false, "true": true, "1": true, "YES": true, " on ": true} {
+		result, err := runEnvJS(t, js, map[string]string{"DEBUG": value})
+		require.NoError(t, err, value)
+		assert.Equal(t, want, result.Values["debug"], "DEBUG=%q", value)
+		assert.Equal(t, map[bool]string{true: "on", false: "off"}[want], result.Values["branch"], "DEBUG=%q", value)
+	}
+
+	result, err := runEnvJS(t, js, map[string]string{})
+	require.NoError(t, err)
+	assert.Equal(t, false, result.Values["debug"])
+}
+
+func TestExecuteDev_EnvInvalidBooleanIsAnError(t *testing.T) {
+	_, err := runEnvJS(t, `env("DEBUG", false)`, map[string]string{"DEBUG": "maybe"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DEBUG")
+	assert.Contains(t, err.Error(), "boolean")
+}
+
+// An unparsable number used to come back as a string and only failed later,
+// far away ("ports[0][0]: expected number, got string").
+func TestExecuteDev_EnvInvalidNumberIsAnError(t *testing.T) {
+	_, err := runEnvJS(t, `env("PORT", 3000)`, map[string]string{"PORT": "30o0"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PORT")
+	assert.Contains(t, err.Error(), `"30o0"`)
+	assert.Contains(t, err.Error(), "number")
+}
+
+// `PORT=` is a common .env placeholder; with a typed default it means unset.
+func TestExecuteDev_EnvEmptyValueUsesTypedDefault(t *testing.T) {
+	js := `config({ namespace: "ns", values: { port: env("PORT", 3000), debug: env("DEBUG", true), name: env("NAME", "web") } })`
+	result, err := runEnvJS(t, js, map[string]string{"PORT": "", "DEBUG": " ", "NAME": ""})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3000), result.Values["port"])
+	assert.Equal(t, true, result.Values["debug"])
+	assert.Equal(t, "", result.Values["name"], "an explicitly empty string stays empty")
+}
+
+func TestExecuteDev_EnvNumberDefaultAcceptsDecimals(t *testing.T) {
+	js := `config({ namespace: "ns", values: { ratio: env("RATIO", 1), port: env("PORT", 3000) } })`
+	result, err := runEnvJS(t, js, map[string]string{"RATIO": "0.25", "PORT": " 8080 "})
+	require.NoError(t, err)
+	assert.Equal(t, 0.25, result.Values["ratio"])
+	assert.Equal(t, int64(8080), result.Values["port"])
+}
+
+// Options of the wrong shape used to be ignored silently: e.g. a string
+// command left the original command running, a DevSpace-style "src:dst"
+// sync string meant no sync at all, and a null selector value became the
+// label value "<nil>" so ct dev waited for a pod forever.
+func TestExecuteDev_RejectsMistypedOptions(t *testing.T) {
+	cases := map[string]struct {
+		js   string
+		want []string
+	}{
+		"command string":        {`dev("web", { command: "npm run dev" })`, []string{`"web"`, "command", "array"}},
+		"command null item":     {`dev("web", { command: ["npm", null] })`, []string{"command[1]"}},
+		"sync string":           {`dev("web", { sync: ["./:/app"] })`, []string{"sync[0]", "object"}},
+		"sync not array":        {`dev("web", { sync: { from: "./", to: "/app" } })`, []string{"sync", "array"}},
+		"env string":            {`dev("web", { env: ["FOO=bar"] })`, []string{"env[0]", "object"}},
+		"ports not array":       {`dev("web", { ports: 3000 })`, []string{"ports", "array"}},
+		"selector not object":   {`dev("web", { selector: "app=web" })`, []string{"selector", "object"}},
+		"selector empty":        {`dev("web", { selector: {} })`, []string{"selector", "empty"}},
+		"selector undefined":    {`const v = {}; dev("web", { selector: { app: v.missing } })`, []string{`selector "app"`}},
+		"terminal not string":   {`dev("web", { terminal: ["bash"] })`, []string{"terminal", "string"}},
+		"container not string":  {`dev("web", { container: 1 })`, []string{"container", "string"}},
+		"image not string":      {`dev("web", { image: { name: "x" } })`, []string{"image", "string"}},
+		"workingDir not string": {`dev("web", { workingDir: 1 })`, []string{"workingDir", "string"}},
+		"probes not bool":       {`dev("web", { probes: "true" })`, []string{"probes", "boolean"}},
+		"replicas not number":   {`dev("web", { replicas: "1" })`, []string{"replicas", "number"}},
+		"replicas fraction":     {`dev("web", { replicas: 1.5 })`, []string{"replicas", "integer"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: tc.js, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+			require.Error(t, err)
+			for _, want := range tc.want {
+				assert.Contains(t, err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestExecuteDev_UndefinedOptionsAreIgnored(t *testing.T) {
+	js := `const v = {}; dev("web", { terminal: v.t, command: v.c, sync: v.s, ports: v.p, selector: v.sel, probes: v.pr, replicas: v.r })`
+	result, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: js, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+	require.NoError(t, err)
+	require.Len(t, result.Targets, 1)
+	assert.Nil(t, result.Targets[0].Selector)
+	assert.Nil(t, result.Targets[0].Probes)
+	assert.Nil(t, result.Targets[0].Replicas)
+}
+
+// An empty or mistyped namespace used to fall back silently to the
+// kubeconfig's default namespace, applying (and pruning) dev resources there.
+func TestExecuteDev_ConfigRejectsMissingOrMistypedNamespace(t *testing.T) {
+	for _, js := range []string{
+		`config({ namespace: "" })`,
+		`const v = {}; config({ namespace: v.missing })`,
+		`config({ values: { a: 1 } })`,
+		`config({ namespace: 5 })`,
+	} {
+		_, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: js, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+		require.Error(t, err, js)
+		assert.Contains(t, err.Error(), "namespace", js)
+	}
+
+	_, err := engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: `config({ namespace: "ns", values: "x" })`, EnvVars: map[string]string{}, PromptFn: noopPrompt})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "values")
 }

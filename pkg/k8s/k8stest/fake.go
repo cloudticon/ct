@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cloudticon/ctts/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/k8s"
 )
 
 // FakePod is the in-memory pod fixture. Healthy=true means WaitPod returns
@@ -28,6 +28,11 @@ type FakePod struct {
 	// LogContent, when non-empty, is written to streamLogs' writer once and
 	// the call then blocks on ctx until cancellation.
 	LogContent string
+
+	// Containers lists the pod's container names. When set, Exec/ExecPod
+	// validate ExecOpts.Container the way the API server does: an unknown
+	// name is rejected, and so is an empty name for a multi-container pod.
+	Containers []string
 }
 
 // ApplyCall records one ApplyRelease invocation.
@@ -266,7 +271,15 @@ func (f *Fake) execPod(ctx context.Context, ns, pod string, sel k8s.Selector, op
 
 	f.mu.Lock()
 	f.ExecCalls = append(f.ExecCalls, ExecCall{Namespace: ns, Selector: sel, Pod: pod, Opts: opts})
+	var containers []string
+	if p := f.Pods[ns][pod]; p != nil {
+		containers = append(containers, p.Containers...)
+	}
 	f.mu.Unlock()
+
+	if err := validateExecContainer(pod, containers, opts.Container); err != nil {
+		return err
+	}
 
 	if f.ExecHook != nil {
 		return f.ExecHook(ns, pod, opts)
@@ -325,6 +338,25 @@ func (f *Fake) findHealthyPod(ns string, sel k8s.Selector) string {
 		}
 	}
 	return ""
+}
+
+// validateExecContainer mirrors the API server's container check for exec.
+func validateExecContainer(pod string, containers []string, container string) error {
+	if len(containers) == 0 {
+		return nil
+	}
+	if container == "" {
+		if len(containers) == 1 {
+			return nil
+		}
+		return fmt.Errorf("a container name must be specified for pod %s, choose one of: %v", pod, containers)
+	}
+	for _, c := range containers {
+		if c == container {
+			return nil
+		}
+	}
+	return fmt.Errorf("container %s is not valid for pod %s", container, pod)
 }
 
 func matchLabels(labels, sel k8s.Selector) bool {
