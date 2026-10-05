@@ -332,7 +332,9 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 			}
 		}
 
-		terminalErr := cluster.Exec(featuresCtx, namespace, target.Selector, k8s.ExecOpts{
+		// Exec into the pod the health watcher watches; resolving it again by
+		// selector could pick another pod (e.g. mid-rollout).
+		terminalErr := cluster.ExecPod(featuresCtx, namespace, podNames[target.Name], k8s.ExecOpts{
 			Container: target.Container,
 			Command:   []string{"/bin/sh", "-c", terminalCommand(target)},
 			Stdin:     os.Stdin,

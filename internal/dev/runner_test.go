@@ -45,6 +45,8 @@ type devCluster struct {
 	portCalls     []string
 	logCalls      []string
 	syncCalls     []string
+	terminalPods  []string
+	watchedPods   []string
 	terminalCalls int32
 	waitCalls     int32
 	healthCalls   int32
@@ -84,6 +86,9 @@ func (d *devCluster) StreamLogs(ctx context.Context, ns, target string, sel k8s.
 
 func (d *devCluster) WatchPod(ctx context.Context, ns, pod string) error {
 	atomic.AddInt32(&d.healthCalls, 1)
+	d.mu.Lock()
+	d.watchedPods = append(d.watchedPods, pod)
+	d.mu.Unlock()
 	if d.WatchPodFn != nil {
 		return d.WatchPodFn(ctx, ns, pod)
 	}
@@ -101,6 +106,17 @@ func (d *devCluster) Exec(ctx context.Context, ns string, sel k8s.Selector, opts
 // ExecPod is the route used by sync. We return success immediately so the
 // dev session's sync feature reports ready and unblocks the terminal.
 func (d *devCluster) ExecPod(ctx context.Context, ns, pod string, opts k8s.ExecOpts) error {
+	if opts.TTY {
+		// The interactive terminal.
+		d.mu.Lock()
+		d.terminalPods = append(d.terminalPods, pod)
+		d.mu.Unlock()
+		atomic.AddInt32(&d.terminalCalls, 1)
+		if d.ExecFn != nil {
+			return d.ExecFn(ctx, ns, nil, opts)
+		}
+		return d.Fake.ExecPod(ctx, ns, pod, opts)
+	}
 	d.mu.Lock()
 	if len(opts.Command) > 0 && opts.Command[0] == "tar" {
 		d.syncCalls = append(d.syncCalls, "tar")
@@ -1256,4 +1272,33 @@ dev("my-dev-web", { terminal: "sh" })
 	require.Len(t, fake.ApplyCalls, 1)
 	meta := fake.ApplyCalls[0].Resources[0]["metadata"].(map[string]interface{})
 	assert.Equal(t, "my-dev-web", meta["name"])
+}
+
+// The health watcher watches the pod resolved when the session starts; the
+// terminal used to resolve a pod again by selector and could end up in a
+// different one (e.g. during the rollout triggered by ct dev's own apply),
+// so the watcher killed a healthy terminal or missed its pod dying.
+func TestRunDevSession_TerminalUsesTheWatchedPod(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	var waits int32
+	dc.WaitPodFn = func(context.Context, string, k8s.Selector) (string, error) {
+		if atomic.AddInt32(&waits, 1) == 1 {
+			return "web-old", nil
+		}
+		return "web-new", nil
+	}
+	dc.ExecFn = func(context.Context, string, k8s.Selector, k8s.ExecOpts) error {
+		time.Sleep(10 * time.Millisecond) // let the health watcher start
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Selector: map[string]string{"app": "web"}, Terminal: "bash"}}, &bytes.Buffer{}))
+
+	dc.mu.Lock()
+	defer dc.mu.Unlock()
+	require.Equal(t, []string{"web-old"}, dc.watchedPods)
+	assert.Equal(t, []string{"web-old"}, dc.terminalPods, "the terminal must run in the pod the health watcher watches")
 }
