@@ -348,3 +348,40 @@ func TestSyncerIncrementalSync_BatchesDeletes(t *testing.T) {
 	}
 	assert.Equal(t, want, got)
 }
+
+// Sync commands discarded the container's stderr, so a failing tar only
+// reported "command terminated with exit code 2" without the reason.
+func TestSyncerInitialSync_ErrorIncludesRemoteStderr(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644))
+
+	fake := &fakePodExecutor{ExecFn: func(_ context.Context, _, _ string, opts k8s.ExecOpts) error {
+		if opts.Command[0] != "tar" {
+			return nil
+		}
+		_, _ = io.WriteString(opts.Stderr, "tar: a.txt: Cannot open: Permission denied\n")
+		return errors.New("command terminated with exit code 2")
+	}}
+	s := NewSyncer(fake, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app"})
+	s.podName = "pod-1"
+
+	err := s.initialSync(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exit code 2")
+	assert.Contains(t, err.Error(), "Permission denied")
+}
+
+func TestSyncerInitialSync_MissingToolHint(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644))
+
+	fake := &fakePodExecutor{ExecFn: func(_ context.Context, _, _ string, opts k8s.ExecOpts) error {
+		return errors.New(`OCI runtime exec failed: exec failed: unable to start container process: exec: "mkdir": executable file not found in $PATH: unknown`)
+	}}
+	s := NewSyncer(fake, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app", Container: "app"})
+	s.podName = "pod-1"
+
+	err := s.initialSync(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `runs tar, mkdir and rm in container "app"`)
+}

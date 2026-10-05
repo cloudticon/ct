@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	stdsync "sync"
 
 	"github.com/cloudticon/ct/pkg/k8s"
 	"github.com/fatih/color"
@@ -129,22 +130,73 @@ func (s *Syncer) run(ctx context.Context, signalReady func()) error {
 }
 
 func (s *Syncer) execStream(ctx context.Context, cmd []string, stdin io.Reader) error {
-	return s.exec.ExecPod(ctx, s.namespace, s.podName, k8s.ExecOpts{
+	return s.runInPod(ctx, cmd, stdin)
+}
+
+func (s *Syncer) execSimple(ctx context.Context, cmd []string) error {
+	return s.runInPod(ctx, cmd, nil)
+}
+
+// runInPod runs cmd in the target container. On failure the error carries
+// what the command printed on stderr: "exit code 2" alone does not tell the
+// user that tar could not write to the target directory.
+func (s *Syncer) runInPod(ctx context.Context, cmd []string, stdin io.Reader) error {
+	stderr := &boundedBuffer{max: 4 << 10}
+	err := s.exec.ExecPod(ctx, s.namespace, s.podName, k8s.ExecOpts{
 		Container: s.rule.Container,
 		Command:   cmd,
 		Stdin:     stdin,
 		Stdout:    io.Discard,
-		Stderr:    io.Discard,
+		Stderr:    stderr,
 	})
+	if err == nil {
+		return nil
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		err = fmt.Errorf("%w: %s", err, msg)
+	}
+	if isMissingToolError(err) {
+		container := "the target container"
+		if s.rule.Container != "" {
+			container = fmt.Sprintf("container %q", s.rule.Container)
+		}
+		err = fmt.Errorf("%w (ct dev sync runs tar, mkdir and rm in %s; the image must provide them)", err, container)
+	}
+	return err
 }
 
-func (s *Syncer) execSimple(ctx context.Context, cmd []string) error {
-	return s.exec.ExecPod(ctx, s.namespace, s.podName, k8s.ExecOpts{
-		Container: s.rule.Container,
-		Command:   cmd,
-		Stdout:    io.Discard,
-		Stderr:    io.Discard,
-	})
+func isMissingToolError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "executable file not found") ||
+		strings.Contains(msg, "exit code 126") ||
+		strings.Contains(msg, "exit code 127")
+}
+
+// boundedBuffer keeps the first max bytes written to it. Exec streams may
+// write from another goroutine, hence the lock.
+type boundedBuffer struct {
+	mu  stdsync.Mutex
+	buf bytes.Buffer
+	max int
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := b.max - b.buf.Len(); room > 0 {
+		if len(p) > room {
+			b.buf.Write(p[:room])
+		} else {
+			b.buf.Write(p)
+		}
+	}
+	return len(p), nil
+}
+
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (s *Syncer) ensureRemoteDir(ctx context.Context) error {
