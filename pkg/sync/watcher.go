@@ -243,7 +243,12 @@ func (w *Watcher) fsnotifyLoop(ctx context.Context, fw *fsnotify.Watcher, out ch
 			}
 
 			if event.Op&fsnotify.Create != 0 && isDir {
-				if err := w.addWatches(fw, event.Name, nil); err != nil {
+				// A directory that appears with content (mv, git checkout,
+				// unzip) produces no events for the files already inside it:
+				// report them while the new directories are being watched.
+				// Watches are added before each directory is read, so files
+				// created concurrently are seen either here or as events.
+				if err := w.addWatches(fw, event.Name, func(path string) { addFile(path, ChangeCreate) }); err != nil {
 					w.setErr(err)
 					return
 				}

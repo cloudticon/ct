@@ -134,3 +134,43 @@ func TestSyncerRun_FailsWhenWatcherCannotStart(t *testing.T) {
 		t.Fatal("Run kept running although no file watcher could be created")
 	}
 }
+
+// Moving a populated directory into the tree (mv, git checkout, unzip, cp -r)
+// yields one Create event for the directory and none for the files inside.
+// The files used to be skipped (directories are not tarred) and never synced.
+func TestWatcherFsnotify_ReportsFilesInsideNewDirectory(t *testing.T) {
+	root := t.TempDir()
+	w, err := NewWatcher(root, []string{"*.tmp"}, false)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ch, err := w.Watch(ctx)
+	require.NoError(t, err)
+
+	staging := filepath.Join(t.TempDir(), "pkg")
+	require.NoError(t, os.MkdirAll(filepath.Join(staging, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "a.txt"), []byte("a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "sub", "b.txt"), []byte("b"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(staging, "skip.tmp"), []byte("x"), 0o644))
+	require.NoError(t, os.Rename(staging, filepath.Join(root, "pkg")))
+
+	seen := map[string]ChangeType{}
+	reported := func(path string) bool {
+		typ, ok := seen[path]
+		return ok && typ == ChangeCreate
+	}
+	deadline := time.After(3 * time.Second)
+	for !reported("pkg/a.txt") || !reported("pkg/sub/b.txt") {
+		select {
+		case batch := <-ch:
+			for _, c := range batch {
+				seen[c.Path] = c.Type
+			}
+		case <-deadline:
+			t.Fatalf("files inside the new directory were not reported; got %v", seen)
+		}
+	}
+	_, excluded := seen["pkg/skip.tmp"]
+	assert.False(t, excluded, "excluded files must not be reported")
+}
