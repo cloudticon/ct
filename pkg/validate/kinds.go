@@ -24,7 +24,13 @@ func checkTyped(obj runtime.Object) field.ErrorList {
 	case *appsv1.Deployment:
 		return checkController(o.Spec.Selector, &o.Spec.Template, spec)
 	case *appsv1.StatefulSet:
-		return checkController(o.Spec.Selector, &o.Spec.Template, spec)
+		// The API server adds volumeClaimTemplates as pod volumes, so
+		// containers may mount them by name.
+		var claims []string
+		for _, c := range o.Spec.VolumeClaimTemplates {
+			claims = append(claims, c.Name)
+		}
+		return checkController(o.Spec.Selector, &o.Spec.Template, spec, claims...)
 	case *appsv1.DaemonSet:
 		return checkController(o.Spec.Selector, &o.Spec.Template, spec)
 	case *appsv1.ReplicaSet:
@@ -58,7 +64,7 @@ func checkTyped(obj runtime.Object) field.ErrorList {
 }
 
 // checkController covers Deployment, StatefulSet, DaemonSet and ReplicaSet.
-func checkController(selector *metav1.LabelSelector, template *corev1.PodTemplateSpec, spec *field.Path) field.ErrorList {
+func checkController(selector *metav1.LabelSelector, template *corev1.PodTemplateSpec, spec *field.Path, extraVolumes ...string) field.ErrorList {
 	var errs field.ErrorList
 	switch {
 	case selector == nil:
@@ -79,7 +85,7 @@ func checkController(selector *metav1.LabelSelector, template *corev1.PodTemplat
 	if p := template.Spec.RestartPolicy; p != "" && p != corev1.RestartPolicyAlways {
 		errs = append(errs, field.NotSupported(podSpec.Child("restartPolicy"), p, []string{string(corev1.RestartPolicyAlways)}))
 	}
-	return append(errs, checkPodSpec(&template.Spec, podSpec)...)
+	return append(errs, checkPodSpec(&template.Spec, podSpec, extraVolumes...)...)
 }
 
 func checkJobTemplate(template *corev1.PodTemplateSpec, path *field.Path) field.ErrorList {
@@ -92,10 +98,13 @@ func checkJobTemplate(template *corev1.PodTemplateSpec, path *field.Path) field.
 	return append(errs, checkPodSpec(&template.Spec, podSpec)...)
 }
 
-func checkPodSpec(spec *corev1.PodSpec, path *field.Path) field.ErrorList {
+func checkPodSpec(spec *corev1.PodSpec, path *field.Path, extraVolumes ...string) field.ErrorList {
 	var errs field.ErrorList
 
 	volumes := map[string]bool{}
+	for _, name := range extraVolumes {
+		volumes[name] = true
+	}
 	for i, v := range spec.Volumes {
 		vp := path.Child("volumes").Index(i)
 		if v.Name == "" {
@@ -104,10 +113,8 @@ func checkPodSpec(spec *corev1.PodSpec, path *field.Path) field.ErrorList {
 			errs = append(errs, field.Duplicate(vp.Child("name"), v.Name))
 		}
 		volumes[v.Name] = true
-		switch n := countSet(v.VolumeSource); {
-		case n == 0:
-			errs = append(errs, field.Required(vp, "must specify a volume type, e.g. emptyDir: {}, configMap: { name }, persistentVolumeClaim: { claimName }"))
-		case n > 1:
+		// No source at all is fine: the API server defaults it to emptyDir.
+		if countSet(v.VolumeSource) > 1 {
 			errs = append(errs, field.Forbidden(vp, "may not specify more than 1 volume type"))
 		}
 	}
@@ -167,7 +174,9 @@ func checkService(svc *corev1.Service, spec *field.Path) field.ErrorList {
 		}
 		return errs
 	}
-	if len(svc.Spec.Ports) == 0 && svc.Spec.ClusterIP != corev1.ClusterIPNone {
+	headless := svc.Spec.ClusterIP == corev1.ClusterIPNone ||
+		(len(svc.Spec.ClusterIPs) > 0 && svc.Spec.ClusterIPs[0] == corev1.ClusterIPNone)
+	if len(svc.Spec.Ports) == 0 && !headless {
 		errs = append(errs, field.Required(spec.Child("ports"), "e.g. ports: [{ port: 80, targetPort: 8080 }]"))
 	}
 	names := map[string]bool{}
@@ -190,11 +199,12 @@ func checkService(svc *corev1.Service, spec *field.Path) field.ErrorList {
 	return errs
 }
 
-// checkPortRef validates a port given as a number or an IANA name.
+// checkPortRef validates a port given as a number or an IANA name. An
+// optional port may be 0 or "" (the API server defaults it).
 func checkPortRef(port intstr.IntOrString, path *field.Path, optional bool) field.ErrorList {
 	var errs field.ErrorList
 	switch {
-	case port.Type == intstr.Int && port.IntVal == 0 && optional:
+	case optional && ((port.Type == intstr.Int && port.IntVal == 0) || (port.Type == intstr.String && port.StrVal == "")):
 	case port.Type == intstr.Int:
 		for _, msg := range utilvalidation.IsValidPortNum(int(port.IntVal)) {
 			errs = append(errs, field.Invalid(path, port.IntVal, msg))

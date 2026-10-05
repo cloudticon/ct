@@ -57,6 +57,9 @@ func messageFor(fe *field.Error) string {
 	case unknownField:
 		return fe.Detail
 	case unknownKind:
+		if fe.Field == "kind" {
+			return fe.Detail
+		}
 		return fmt.Sprintf("unknown apiVersion %q: %s", fe.BadValue, fe.Detail)
 	}
 	return fe.ErrorBody()
@@ -87,6 +90,8 @@ func hintFor(fe *field.Error) string {
 		return "check the field name and nesting; for workloads, container fields (image, ports, env) go under spec.template.spec.containers[]"
 	case fe.Type == unknownField:
 		return "check the field name and nesting against the Kubernetes API reference (`kubectl explain`); if your cluster is newer than this ct build, pass --validate=false"
+	case fe.Type == unknownKind && fe.Field == "kind":
+		return "if the kind comes from a Kubernetes release newer than this ct build, pass --validate=false"
 	case strings.HasPrefix(fe.Detail, "expected a string, got"):
 		return "convert it in code with String(...), quote it in the values file, or pass it with --set-string"
 	case fe.Field == "metadata.name" && fe.Type == field.ErrorTypeRequired:
@@ -133,6 +138,13 @@ func checkResource(res manifest.Resource) field.ErrorList {
 				BadValue: apiVersion,
 				Detail:   fmt.Sprintf("%s is served as %s", kind, strings.Join(alternatives, " or ")),
 			})
+		}
+		if gvk.Group == "core" || builtinGroups[gvk.Group] {
+			detail := fmt.Sprintf("Kubernetes has no kind %q in %s", kind, apiVersion)
+			if similar := similarKinds(kind); len(similar) > 0 {
+				detail += fmt.Sprintf("; did you mean %s?", strings.Join(similar, " or "))
+			}
+			return append(errs, &field.Error{Type: unknownKind, Field: "kind", BadValue: kind, Detail: detail})
 		}
 	}
 	errs = append(errs, checkMetadata(meta, kind, builtin)...)
@@ -191,6 +203,8 @@ func nameValidator(kind string, builtin bool) apivalidation.ValidateNameFunc {
 	switch {
 	case !builtin:
 		return apivalidation.NameIsDNSSubdomain
+	case kind == "CertificateSigningRequest":
+		return func(string, bool) []string { return nil } // any name is accepted
 	case kind == "Namespace":
 		return apivalidation.ValidateNamespaceName
 	case kind == "Service":
@@ -262,6 +276,45 @@ var builtinGroups = func() map[string]bool {
 	}
 	return groups
 }()
+
+// similarKinds suggests built-in kinds for a misspelled one: same name in
+// another case, or within two edits.
+func similarKinds(kind string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for known := range scheme.Scheme.AllKnownTypes() {
+		k := known.Kind
+		if seen[k] || known.Version == runtime.APIVersionInternal || strings.HasSuffix(k, "List") || strings.HasSuffix(k, "Options") {
+			continue
+		}
+		seen[k] = true
+		if strings.EqualFold(k, kind) || editDistance(strings.ToLower(k), strings.ToLower(kind)) <= 2 {
+			out = append(out, fmt.Sprintf("%q", k))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
 
 func isStable(version string) bool {
 	return !strings.Contains(version, "alpha") && !strings.Contains(version, "beta")
@@ -353,7 +406,7 @@ func decodeStrict(res manifest.Resource) (runtime.Object, field.ErrorList) {
 
 // typeErrorRe matches sigs.k8s.io/json type errors, e.g. `json: cannot
 // unmarshal string into Go struct field DeploymentSpec.spec.replicas of type int32`.
-var typeErrorRe = regexp.MustCompile(`cannot unmarshal (\S+) into Go struct field \w+\.(\S+) of type (\S+)`)
+var typeErrorRe = regexp.MustCompile(`cannot unmarshal (.+?) into Go struct field \w+\.(\S+) of type (\S+)`)
 
 var unknownFieldRe = regexp.MustCompile(`^unknown field "(.+)"$`)
 

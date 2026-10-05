@@ -63,6 +63,16 @@ func TestValidate_AcceptsValidObjects(t *testing.T) {
 		`{"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "migrate"}, "spec": {"template": {"spec": {"restartPolicy": "Never", "containers": [{"name": "m", "image": "app:1"}]}}}}`,
 		`{"apiVersion": "batch/v1", "kind": "CronJob", "metadata": {"name": "nightly"}, "spec": {"schedule": "0 3 * * *", "jobTemplate": {"spec": {"template": {"spec": {"restartPolicy": "OnFailure", "containers": [{"name": "c", "image": "app:1"}]}}}}}}`,
 		`{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": {"name": "allow-all"}, "spec": {"podSelector": {}, "ingress": [{}]}}`,
+		// The API server defaults a volume without a source to emptyDir.
+		strings.Replace(deployment, `{"name": "tmp", "emptyDir": {}}`, `{"name": "tmp"}`, 1),
+		// StatefulSet containers may mount volumeClaimTemplates.
+		`{"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": {"name": "db"}, "spec": {"serviceName": "db", "selector": {"matchLabels": {"app": "db"}}, "volumeClaimTemplates": [{"metadata": {"name": "data"}, "spec": {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": "1Gi"}}}}], "template": {"metadata": {"labels": {"app": "db"}}, "spec": {"containers": [{"name": "db", "image": "postgres:17", "volumeMounts": [{"name": "data", "mountPath": "/var/lib/postgresql"}]}]}}}}`,
+		// targetPort "" defaults to port; clusterIPs [None] is headless.
+		`{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web2"}, "spec": {"ports": [{"port": 80, "targetPort": ""}]}}`,
+		`{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "db2"}, "spec": {"clusterIPs": ["None"], "selector": {"app": "db"}}}`,
+		// Native sidecars: init containers with restartPolicy Always.
+		strings.Replace(deployment, `"containers": [`, `"initContainers": [{"name": "proxy", "image": "envoy:1", "restartPolicy": "Always"}], "containers": [`, 1),
+		`{"apiVersion": "certificates.k8s.io/v1", "kind": "CertificateSigningRequest", "metadata": {"name": "User:Alice"}, "spec": {"request": "Y3Ny", "signerName": "kubernetes.io/kube-apiserver-client", "usages": ["client auth"]}}`,
 		// Custom resources: only metadata is checked.
 		`{"apiVersion": "serving.knative.dev/v1", "kind": "Service", "metadata": {"name": "hello"}, "spec": {"template": {"spec": {"containers": [{"image": "x"}]}}}}`,
 		`{"apiVersion": "cert-manager.io/v1", "kind": "Certificate", "metadata": {"name": "web-tls"}, "spec": {"anything": {"goes": true}}}`,
@@ -152,9 +162,27 @@ func TestValidate_Rejects(t *testing.T) {
 			},
 		},
 		{
-			"volume without a source (emptyDir {} dropped)",
-			strings.Replace(deployment, `{"name": "tmp", "emptyDir": {}}`, `{"name": "tmp"}`, 1),
-			[]want{{diag.CodeMissingField, "spec.template.spec.volumes[0]", "must specify a volume type"}},
+			"volume with two sources",
+			strings.Replace(deployment, `{"name": "tmp", "emptyDir": {}}`, `{"name": "tmp", "emptyDir": {}, "configMap": {"name": "x"}}`, 1),
+			[]want{{diag.CodeInvalidValue, "spec.template.spec.volumes[0]", "may not specify more than 1 volume type"}},
+		},
+		{
+			"misspelled built-in kinds",
+			`{"apiVersion": "apps/v1", "kind": "Deploymnet", "metadata": {"name": "web"}, "spec": {"junk": 1}}`,
+			[]want{{diag.CodeUnknownKind, "kind", `no kind "Deploymnet" in apps/v1; did you mean "Deployment"?`}},
+		},
+		{
+			"wrong case of a core kind",
+			`{"apiVersion": "v1", "kind": "Configmap", "metadata": {"name": "cfg"}}`,
+			[]want{{diag.CodeUnknownKind, "kind", `did you mean "ConfigMap"?`}},
+		},
+		{
+			"fractional number in an integer field doesn't hide later errors",
+			strings.NewReplacer(`"replicas": 2`, `"replicas": 1.5`, `"image": "nginx:1.27",`, `"image": "nginx:1.27", "env": [{"name": "A", "value": 3}],`).Replace(deployment),
+			[]want{
+				{diag.CodeInvalidValue, "spec.replicas", "expected an integer, got number 1.5"},
+				{diag.CodeInvalidValue, "spec.template.spec.containers.env.value", "expected a string, got number"},
+			},
 		},
 		{
 			"Deployment with restartPolicy Never",
