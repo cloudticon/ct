@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/fatih/color"
 
 	corev1 "k8s.io/api/core/v1"
@@ -51,13 +52,17 @@ func (c *client) applyRelease(ctx context.Context, namespace, releaseName string
 		return fmt.Errorf("building resource refs: %w", err)
 	}
 
-	orphaned := computeOrphaned(oldRefs, newRefs)
+	defaultNs := namespace
+	if defaultNs == "" {
+		defaultNs = c.Namespace
+	}
+	orphaned := computeOrphaned(oldRefs, newRefs, defaultNs)
 
 	// Track old+new before touching the cluster: if apply fails halfway, the
 	// objects it already created stay in the inventory and a later run can
 	// still prune them. A first install skips this, because the release may
 	// create the namespace the inventory lives in.
-	if added := computeOrphaned(newRefs, oldRefs); len(added) > 0 && len(oldRefs) > 0 {
+	if added := computeOrphaned(newRefs, oldRefs, defaultNs); len(added) > 0 && len(oldRefs) > 0 {
 		if err := saveInventoryRefs(ctx, c, namespace, releaseName, append(append([]ResourceRef{}, oldRefs...), added...)); err != nil {
 			return fmt.Errorf("saving inventory: %w", err)
 		}
@@ -341,21 +346,24 @@ func resourcesToRefs(resources []Resource) ([]ResourceRef, error) {
 // --- Prune (orphan detection) ---
 
 // computeOrphaned returns refs that existed before but are no longer present.
-// Comparison key is apiVersion+kind+namespace+name.
-func computeOrphaned(oldRefs, newRefs []ResourceRef) []ResourceRef {
+// Refs are compared by server-side identity: API group (not version), kind,
+// namespace (an empty one means defaultNamespace) and name. Comparing raw
+// apiVersions and namespaces pruned the object just applied when an HPA
+// moved from autoscaling/v1 to v2 or a release gained an explicit -n.
+func computeOrphaned(oldRefs, newRefs []ResourceRef, defaultNamespace string) []ResourceRef {
 	if len(oldRefs) == 0 {
 		return []ResourceRef{}
 	}
 
 	newSet := make(map[string]struct{}, len(newRefs))
 	for _, ref := range newRefs {
-		newSet[resourceRefKey(ref)] = struct{}{}
+		newSet[resourceRefKey(ref, defaultNamespace)] = struct{}{}
 	}
 
 	orphaned := make([]ResourceRef, 0)
 	seen := make(map[string]struct{}, len(oldRefs))
 	for _, ref := range oldRefs {
-		key := resourceRefKey(ref)
+		key := resourceRefKey(ref, defaultNamespace)
 		if _, alreadyAdded := seen[key]; alreadyAdded {
 			continue
 		}
@@ -369,8 +377,15 @@ func computeOrphaned(oldRefs, newRefs []ResourceRef) []ResourceRef {
 	return orphaned
 }
 
-func resourceRefKey(ref ResourceRef) string {
-	return fmt.Sprintf("%s|%s|%s|%s", ref.APIVersion, ref.Kind, ref.Namespace, ref.Name)
+func resourceRefKey(ref ResourceRef, defaultNamespace string) string {
+	ns := ref.Namespace
+	switch {
+	case manifest.IsClusterScoped(ref.APIVersion, ref.Kind):
+		ns = ""
+	case ns == "":
+		ns = defaultNamespace
+	}
+	return fmt.Sprintf("%s|%s|%s|%s", manifest.Group(ref.APIVersion), ref.Kind, ns, ref.Name)
 }
 
 // --- Label injection ---
