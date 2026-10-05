@@ -2,7 +2,9 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 
 	"github.com/dop251/goja"
 )
@@ -113,7 +115,11 @@ func registerEnvGlobal(h *JSHelper, envVars map[string]string) {
 			return "", nil
 		}
 		if args.HasArg(1) {
-			return coerceToType(val, args.Raw(1).Export())
+			v, err := coerceToType(val, args.Raw(1).Export())
+			if err != nil {
+				return nil, fmt.Errorf("%s=%q: %w", name, val, err)
+			}
+			return v, nil
 		}
 		return val, nil
 	})
@@ -125,17 +131,35 @@ func registerPromptGlobal(h *JSHelper, promptFn func(string) (string, error)) {
 	})
 }
 
-// coerceToType parses val string to match the type of defaultVal.
+// coerceToType parses val to the type of defaultVal (number or boolean; any
+// other default returns val unchanged). An empty value means "not set" for
+// typed defaults (`PORT=` placeholders in .env files). A value that cannot be
+// parsed is an error: returning the raw string would only fail later and far
+// away, and the string "false" is truthy in JS.
 func coerceToType(val string, defaultVal interface{}) (interface{}, error) {
 	switch defaultVal.(type) {
-	case int64:
-		if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+	case int64, float64:
+		s := strings.TrimSpace(val)
+		if s == "" {
+			return defaultVal, nil
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
 			return n, nil
 		}
-	case float64:
-		if f, err := strconv.ParseFloat(val, 64); err == nil {
+		if f, err := strconv.ParseFloat(s, 64); err == nil && !math.IsInf(f, 0) && !math.IsNaN(f) {
 			return f, nil
 		}
+		return nil, fmt.Errorf("value is not a number (the default %v is a number)", defaultVal)
+	case bool:
+		switch strings.ToLower(strings.TrimSpace(val)) {
+		case "":
+			return defaultVal, nil
+		case "true", "1", "yes", "on":
+			return true, nil
+		case "false", "0", "no", "off":
+			return false, nil
+		}
+		return nil, fmt.Errorf("value is not a boolean (use true/false, 1/0, yes/no or on/off; the default %v is a boolean)", defaultVal)
 	}
 	return val, nil
 }

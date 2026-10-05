@@ -398,3 +398,62 @@ func TestExecuteDev_FullScenario(t *testing.T) {
 	assert.Equal(t, int64(43291), pgPort[0])
 	assert.Equal(t, int64(5432), pgPort[1])
 }
+
+func runEnvJS(t *testing.T, js string, env map[string]string) (*engine.DevResult, error) {
+	t.Helper()
+	return engine.ExecuteDev(engine.ExecuteDevOpts{JSCode: js, EnvVars: env, PromptFn: noopPrompt})
+}
+
+// env("DEBUG", false) returned the string "false" when DEBUG=false was set,
+// and every non-empty string is truthy in JS.
+func TestExecuteDev_EnvBooleanDefault(t *testing.T) {
+	js := `
+		const debug = env("DEBUG", false)
+		config({ namespace: "ns", values: { debug: debug, branch: debug ? "on" : "off" } })
+	`
+	for value, want := range map[string]bool{"false": false, "0": false, "no": false, "true": true, "1": true, "YES": true, " on ": true} {
+		result, err := runEnvJS(t, js, map[string]string{"DEBUG": value})
+		require.NoError(t, err, value)
+		assert.Equal(t, want, result.Values["debug"], "DEBUG=%q", value)
+		assert.Equal(t, map[bool]string{true: "on", false: "off"}[want], result.Values["branch"], "DEBUG=%q", value)
+	}
+
+	result, err := runEnvJS(t, js, map[string]string{})
+	require.NoError(t, err)
+	assert.Equal(t, false, result.Values["debug"])
+}
+
+func TestExecuteDev_EnvInvalidBooleanIsAnError(t *testing.T) {
+	_, err := runEnvJS(t, `env("DEBUG", false)`, map[string]string{"DEBUG": "maybe"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DEBUG")
+	assert.Contains(t, err.Error(), "boolean")
+}
+
+// An unparsable number used to come back as a string and only failed later,
+// far away ("ports[0][0]: expected number, got string").
+func TestExecuteDev_EnvInvalidNumberIsAnError(t *testing.T) {
+	_, err := runEnvJS(t, `env("PORT", 3000)`, map[string]string{"PORT": "30o0"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PORT")
+	assert.Contains(t, err.Error(), `"30o0"`)
+	assert.Contains(t, err.Error(), "number")
+}
+
+// `PORT=` is a common .env placeholder; with a typed default it means unset.
+func TestExecuteDev_EnvEmptyValueUsesTypedDefault(t *testing.T) {
+	js := `config({ namespace: "ns", values: { port: env("PORT", 3000), debug: env("DEBUG", true), name: env("NAME", "web") } })`
+	result, err := runEnvJS(t, js, map[string]string{"PORT": "", "DEBUG": " ", "NAME": ""})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3000), result.Values["port"])
+	assert.Equal(t, true, result.Values["debug"])
+	assert.Equal(t, "", result.Values["name"], "an explicitly empty string stays empty")
+}
+
+func TestExecuteDev_EnvNumberDefaultAcceptsDecimals(t *testing.T) {
+	js := `config({ namespace: "ns", values: { ratio: env("RATIO", 1), port: env("PORT", 3000) } })`
+	result, err := runEnvJS(t, js, map[string]string{"RATIO": "0.25", "PORT": " 8080 "})
+	require.NoError(t, err)
+	assert.Equal(t, 0.25, result.Values["ratio"])
+	assert.Equal(t, int64(8080), result.Values["port"])
+}
