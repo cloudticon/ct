@@ -614,3 +614,39 @@ func TestWaitForPod_RewatchesWhenWatchCloses(t *testing.T) {
 	require.NoError(t, r.err)
 	assert.Equal(t, "web-2", r.pod)
 }
+
+// Port-forward, log streaming, sync and the session all wait for the same
+// pod; during a crash loop each of them printed the same crash logs every
+// five seconds.
+func TestLogContainerProblem_DedupesAcrossWaiters(t *testing.T) {
+	resetProblemReports(t)
+	logs := captureWaitLog(t)
+	origFetch := fetchPreviousLogsFn
+	t.Cleanup(func() { fetchPreviousLogsFn = origFetch })
+	fetches := 0
+	fetchPreviousLogsFn = func(context.Context, *client, string) string {
+		fetches++
+		return "panic: boom"
+	}
+
+	for i := 0; i < 4; i++ {
+		logContainerProblem(context.Background(), &client{}, "web-dedupe-1", `container "app" is in CrashLoopBackOff`)
+	}
+	assert.Equal(t, 1, strings.Count(logs.String(), "panic: boom"))
+	assert.Equal(t, 1, fetches)
+
+	logContainerProblem(context.Background(), &client{}, "web-dedupe-1", `container "app" has terminated (Error, exit code 1)`)
+	assert.Equal(t, 2, strings.Count(logs.String(), "panic: boom"), "a different problem is reported")
+}
+
+func resetProblemReports(t *testing.T) {
+	t.Helper()
+	problemReportsMu.Lock()
+	problemReports = map[string]time.Time{}
+	problemReportsMu.Unlock()
+	t.Cleanup(func() {
+		problemReportsMu.Lock()
+		problemReports = map[string]time.Time{}
+		problemReportsMu.Unlock()
+	})
+}

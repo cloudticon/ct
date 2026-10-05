@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
@@ -232,7 +233,30 @@ func defaultContainerName(pod *corev1.Pod) string {
 	return ""
 }
 
+// problemReports remembers when a pod problem was last printed. Several
+// features wait for the same pod concurrently (session, port-forward, logs,
+// sync); without this each printed the same crash logs every retry.
+var (
+	problemReportsMu    sync.Mutex
+	problemReports      = map[string]time.Time{}
+	problemReportsEvery = 30 * time.Second
+)
+
+func shouldReportProblem(podName, problem string) bool {
+	problemReportsMu.Lock()
+	defer problemReportsMu.Unlock()
+	key := podName + "\x00" + problem
+	if last, ok := problemReports[key]; ok && time.Since(last) < problemReportsEvery {
+		return false
+	}
+	problemReports[key] = time.Now()
+	return true
+}
+
 func logContainerProblem(ctx context.Context, c *client, podName, problem string) {
+	if !shouldReportProblem(podName, problem) {
+		return
+	}
 	waitLog.Printf("%s pod %q: %s, fetching crash logs...", color.YellowString("[wait]"), podName, problem)
 	if logs := fetchPreviousLogsFn(ctx, c, podName); logs != "" {
 		waitLog.Printf("%s previous logs for %q:\n%s", color.YellowString("[wait]"), podName, logs)
