@@ -87,7 +87,9 @@ func hintFor(fe *field.Error) string {
 		return "check the field name and nesting; for workloads, container fields (image, ports, env) go under spec.template.spec.containers[]"
 	case fe.Type == unknownField:
 		return "check the field name and nesting against the Kubernetes API reference (`kubectl explain`); if your cluster is newer than this ct build, pass --validate=false"
-	case fe.Field == "metadata.name" || fe.Field == "metadata.namespace":
+	case fe.Field == "metadata.name" && fe.Type == field.ErrorTypeRequired:
+		return "every object needs a name; factories usually take it as `name`"
+	case (fe.Field == "metadata.name" || fe.Field == "metadata.namespace") && fe.Type == field.ErrorTypeInvalid:
 		return "names are lowercase letters, digits and '-' (Services and Namespaces also no '.'), starting and ending with a letter or digit"
 	}
 	return ""
