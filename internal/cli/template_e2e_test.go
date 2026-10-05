@@ -373,6 +373,39 @@ __ct_resources.push({apiVersion: "v1", kind: "ConfigMap", metadata: { name: "x" 
 	assert.Contains(t, err.Error(), "serialization failed")
 }
 
+func TestTemplateE2E_SetWithoutValuesFile(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" }, data: { tag: Values.image.tag } });
+`, nil)
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir, "--set", "image.tag=1.10")
+	require.NoError(t, err)
+
+	docs := splitYAMLDocs(t, stdout)
+	require.Len(t, docs, 1)
+	assert.Equal(t, "1.10", asMap(t, docs[0]["data"])["tag"], "tag stays the string 1.10, not the number 1.1")
+}
+
+func TestTemplateE2E_MergesRepeatedValuesFiles(t *testing.T) {
+	dir := writeProject(t, `
+__ct_resources.push({
+  apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" },
+  data: { image: Values.image.repository + ":" + Values.image.tag, replicas: String(Values.replicas) },
+});
+`, map[string]string{
+		"values.yaml":      "image:\n  repository: nginx\n  tag: \"1.25\"\nreplicas: 1\n",
+		"values-prod.yaml": "image:\n  tag: \"1.27\"\n",
+	})
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir,
+		"-f", filepath.Join(dir, "values.yaml"), "-f", filepath.Join(dir, "values-prod.yaml"), "--set-string", "replicas=3")
+	require.NoError(t, err)
+
+	data := asMap(t, splitYAMLDocs(t, stdout)[0]["data"])
+	assert.Equal(t, "nginx:1.27", data["image"])
+	assert.Equal(t, "3", data["replicas"])
+}
+
 // --- helpers ---
 
 func splitYAMLDocs(t *testing.T, raw string) []map[string]interface{} {

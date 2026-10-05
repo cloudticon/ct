@@ -164,3 +164,110 @@ func TestLoadValuesFile_FloatPreserved(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0.75, values["ratio"])
 }
+
+func TestLoadValues_NoSources(t *testing.T) {
+	values, err := engine.LoadValues(engine.ValuesOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{}, values)
+}
+
+func TestLoadValues_SetWithoutValuesFile(t *testing.T) {
+	values, err := engine.LoadValues(engine.ValuesOpts{Set: []string{"image.tag=v2", "replicas=3"}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{
+		"image":    map[string]interface{}{"tag": "v2"},
+		"replicas": int64(3),
+	}, values)
+}
+
+func TestLoadValues_EmptyYAMLFileWithSet(t *testing.T) {
+	// A values.yaml with only comments decodes to a nil map; --set used to
+	// panic writing into it.
+	path := filepath.Join(t.TempDir(), "values.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("# all defaults commented out\n"), 0o644))
+
+	values, err := engine.LoadValues(engine.ValuesOpts{Files: []string{path}, Set: []string{"a=1"}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{"a": int64(1)}, values)
+}
+
+func TestLoadValues_JSONNullFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "values.json")
+	require.NoError(t, os.WriteFile(path, []byte("null"), 0o644))
+
+	values, err := engine.LoadValues(engine.ValuesOpts{Files: []string{path}, Set: []string{"a=b"}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{"a": "b"}, values)
+}
+
+func TestLoadValues_MultipleFilesDeepMerge(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "values.yaml")
+	prod := filepath.Join(dir, "values-prod.json")
+	require.NoError(t, os.WriteFile(base, []byte(`
+image: { repository: nginx, tag: "1.25" }
+replicas: 1
+hosts: [a.example.com, b.example.com]
+debug: true
+`), 0o644))
+	require.NoError(t, os.WriteFile(prod, []byte(`{"image":{"tag":"1.27"},"replicas":3,"hosts":["prod.example.com"]}`), 0o644))
+
+	values, err := engine.LoadValues(engine.ValuesOpts{Files: []string{base, prod}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{
+		"image":    map[string]interface{}{"repository": "nginx", "tag": "1.27"},
+		"replicas": int64(3),
+		"hosts":    []interface{}{"prod.example.com"},
+		"debug":    true,
+	}, values)
+}
+
+func TestLoadValues_SetKeepsNonCanonicalNumbersAsStrings(t *testing.T) {
+	values, err := engine.LoadValues(engine.ValuesOpts{Set: []string{
+		"tag=1.10", "minor=1.0", "zip=0123", "exp=1e3", "plus=+1",
+		"int=42", "neg=-7", "float=0.5", "on=true", "off=false", "nothing=null",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, "1.10", values["tag"])
+	assert.Equal(t, "1.0", values["minor"])
+	assert.Equal(t, "0123", values["zip"])
+	assert.Equal(t, "1e3", values["exp"])
+	assert.Equal(t, "+1", values["plus"])
+	assert.Equal(t, int64(42), values["int"])
+	assert.Equal(t, int64(-7), values["neg"])
+	assert.Equal(t, 0.5, values["float"])
+	assert.Equal(t, true, values["on"])
+	assert.Equal(t, false, values["off"])
+	assert.Contains(t, values, "nothing")
+	assert.Nil(t, values["nothing"])
+}
+
+func TestLoadValues_SetString(t *testing.T) {
+	values, err := engine.LoadValues(engine.ValuesOpts{
+		Set:       []string{"replicas=3", "flag=true"},
+		SetString: []string{"flag=true", "port=8080"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), values["replicas"])
+	assert.Equal(t, "true", values["flag"], "--set-string wins and stays a string")
+	assert.Equal(t, "8080", values["port"])
+}
+
+func TestLoadValues_SetEscapedDots(t *testing.T) {
+	values, err := engine.LoadValues(engine.ValuesOpts{Set: []string{
+		`annotations.nginx\.ingress\.kubernetes\.io/rewrite-target=/`,
+		"url=https://example.com/a=b",
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, map[string]interface{}{
+		"nginx.ingress.kubernetes.io/rewrite-target": "/",
+	}, values["annotations"])
+	assert.Equal(t, "https://example.com/a=b", values["url"], "only the first = separates key and value")
+}
+
+func TestLoadValues_SetRejectsEmptyKeySegments(t *testing.T) {
+	for _, bad := range []string{"=x", "a..b=x", ".a=x", "a.=x"} {
+		_, err := engine.LoadValues(engine.ValuesOpts{Set: []string{bad}})
+		assert.Error(t, err, bad)
+	}
+}

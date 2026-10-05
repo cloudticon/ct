@@ -75,13 +75,9 @@ func runTypes(cmd *cobra.Command, dir string, opts typesOpts) error {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
 
-	valuesPath := resolveValuesPath(absDir, "")
-	var values map[string]interface{}
-	if valuesPath != "" {
-		values, err = engine.LoadValuesFile(valuesPath, nil)
-		if err != nil {
-			return fmt.Errorf("loading values: %w", err)
-		}
+	values, err := engine.LoadValues(engine.ValuesOpts{Files: resolveValuesFiles(absDir, nil)})
+	if err != nil {
+		return fmt.Errorf("loading values: %w", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(outDir, "values.d.ts"), []byte(generateValuesDts(values)), 0o644); err != nil {
@@ -245,8 +241,7 @@ func collectUniqueWorkloadNames(dir string) []string {
 		return nil
 	}
 
-	valuesPath := resolveValuesPath(dir, "")
-	values, err := loadValuesIfPresent(valuesPath, nil)
+	values, err := engine.LoadValues(engine.ValuesOpts{Files: resolveValuesFiles(dir, nil)})
 	if err != nil {
 		return nil
 	}

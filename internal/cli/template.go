@@ -13,12 +13,13 @@ import (
 )
 
 type templateOpts struct {
-	namespace   string
-	valuesFile  string
-	outputFmt   string
-	setValues   []string
-	noCache     bool
-	releaseName string
+	namespace       string
+	valuesFiles     []string
+	outputFmt       string
+	setValues       []string
+	setStringValues []string
+	noCache         bool
+	releaseName     string
 }
 
 func newTemplateCmd() *cobra.Command {
@@ -35,9 +36,8 @@ func newTemplateCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "default namespace for resources")
-	cmd.Flags().StringVarP(&opts.valuesFile, "values", "f", "", "path to values file (JSON or YAML, overrides auto-detect)")
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "yaml", "output format: yaml or json")
-	cmd.Flags().StringArrayVar(&opts.setValues, "set", nil, "override values (e.g. --set replicas=5)")
+	addValuesFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "skip cache, re-download remote source")
 
 	return cmd
@@ -45,6 +45,12 @@ func newTemplateCmd() *cobra.Command {
 
 func init() {
 	rootCmd.AddCommand(newTemplateCmd())
+}
+
+func addValuesFlags(cmd *cobra.Command, opts *templateOpts) {
+	cmd.Flags().StringArrayVarP(&opts.valuesFiles, "values", "f", nil, "values file (JSON or YAML); repeat to deep-merge files left to right; replaces auto-detected values.json/values.yaml")
+	cmd.Flags().StringArrayVar(&opts.setValues, "set", nil, "override a value (e.g. --set replicas=5, --set 'annotations.a\\.b/c=x'); numbers, true/false and null are typed")
+	cmd.Flags().StringArrayVar(&opts.setStringValues, "set-string", nil, "override a value, always as a string (e.g. --set-string image.tag=1.10)")
 }
 
 func runTemplate(cmd *cobra.Command, releaseName, sourceDir string, opts templateOpts) error {
@@ -77,8 +83,11 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 
 	tr := engine.NewTranspiler(dir)
 
-	valuesPath := resolveValuesPath(dir, opts.valuesFile)
-	values, err := loadValuesIfPresent(valuesPath, opts.setValues)
+	values, err := engine.LoadValues(engine.ValuesOpts{
+		Files:     resolveValuesFiles(dir, opts.valuesFiles),
+		Set:       opts.setValues,
+		SetString: opts.setStringValues,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -101,32 +110,42 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 	return resources, nil
 }
 
-func resolveValuesPath(dir, explicit string) string {
-	if explicit != "" {
-		return explicit
+// resolveValuesFiles returns the values files for a render. Explicit files
+// are used as given, falling back to the project directory, so
+// `-f values-prod.yaml` works for remote sources too. Without explicit files
+// the first of values.json, values.yaml, values.yml in dir is used.
+func resolveValuesFiles(dir string, explicit []string) []string {
+	if len(explicit) > 0 {
+		files := make([]string, len(explicit))
+		for i, f := range explicit {
+			files[i] = f
+			if _, err := os.Stat(f); err != nil && !filepath.IsAbs(f) {
+				if inProject := filepath.Join(dir, f); fileExists(inProject) {
+					files[i] = inProject
+				}
+			}
+		}
+		return files
 	}
-	candidates := []string{"values.json", "values.yaml", "values.yml"}
-	for _, name := range candidates {
+	if path := detectValuesFile(dir); path != "" {
+		return []string{path}
+	}
+	return nil
+}
+
+func detectValuesFile(dir string) string {
+	for _, name := range []string{"values.json", "values.yaml", "values.yml"} {
 		path := filepath.Join(dir, name)
-		if _, err := os.Stat(path); err == nil {
+		if fileExists(path) {
 			return path
 		}
 	}
 	return ""
 }
 
-func loadValuesIfPresent(valuesPath string, setOverrides []string) (map[string]interface{}, error) {
-	if valuesPath == "" && len(setOverrides) == 0 {
-		return nil, nil
-	}
-	if valuesPath == "" {
-		return nil, fmt.Errorf("--set provided but no values file found")
-	}
-	values, err := engine.LoadValuesFile(valuesPath, setOverrides)
-	if err != nil {
-		return nil, fmt.Errorf("loading values from %s: %w", valuesPath, err)
-	}
-	return values, nil
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 func toOutputResources(resources []engine.Resource) []output.Resource {

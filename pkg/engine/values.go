@@ -11,7 +11,45 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ValuesOpts lists value sources in precedence order: Files are deep-merged
+// left to right (maps merge, everything else is replaced), then Set and
+// SetString overrides are applied in order.
+type ValuesOpts struct {
+	Files []string
+	// Set holds key=value overrides; values that look like numbers, booleans
+	// or null are typed (see parseValue).
+	Set []string
+	// SetString holds key=value overrides that always stay strings.
+	SetString []string
+}
+
+// LoadValues builds the Values object for a render. With no sources it
+// returns an empty map.
+func LoadValues(opts ValuesOpts) (map[string]interface{}, error) {
+	values := map[string]interface{}{}
+	for _, path := range opts.Files {
+		fileValues, err := readValuesFile(path)
+		if err != nil {
+			return nil, err
+		}
+		mergeValues(values, fileValues)
+	}
+
+	if err := applySetOverrides(values, "--set", opts.Set, parseValue); err != nil {
+		return nil, err
+	}
+	if err := applySetOverrides(values, "--set-string", opts.SetString, func(s string) interface{} { return s }); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+// LoadValuesFile loads a single values file and applies --set overrides.
 func LoadValuesFile(path string, setOverrides []string) (map[string]interface{}, error) {
+	return LoadValues(ValuesOpts{Files: []string{path}, Set: setOverrides})
+}
+
+func readValuesFile(path string) (map[string]interface{}, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading values file %s: %w", path, err)
@@ -33,13 +71,26 @@ func LoadValuesFile(path string, setOverrides []string) (map[string]interface{},
 		return nil, fmt.Errorf("unsupported values file format: %s (expected .json, .yaml, or .yml)", ext)
 	}
 
-	normalizeNumbers(values)
-
-	if err := applySetOverrides(values, setOverrides); err != nil {
-		return nil, fmt.Errorf("applying --set overrides: %w", err)
+	// An empty YAML file or a JSON `null` decodes to a nil map.
+	if values == nil {
+		values = map[string]interface{}{}
 	}
-
+	normalizeNumbers(values)
 	return values, nil
+}
+
+// mergeValues deep-merges src into dst. Nested maps merge key by key; any
+// other value (including arrays) replaces what dst had, like Helm.
+func mergeValues(dst, src map[string]interface{}) {
+	for k, v := range src {
+		srcMap, srcIsMap := v.(map[string]interface{})
+		dstMap, dstIsMap := dst[k].(map[string]interface{})
+		if srcIsMap && dstIsMap {
+			mergeValues(dstMap, srcMap)
+			continue
+		}
+		dst[k] = v
+	}
 }
 
 // normalizeNumbers converts float64 whole numbers (from JSON) and int (from YAML)
@@ -72,16 +123,46 @@ func normalizeValue(v interface{}) interface{} {
 	}
 }
 
-func applySetOverrides(values map[string]interface{}, overrides []string) error {
+func applySetOverrides(values map[string]interface{}, flag string, overrides []string, parse func(string) interface{}) error {
 	for _, override := range overrides {
-		parts := strings.SplitN(override, "=", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid --set format: %q (expected key=value)", override)
+		key, rawValue, ok := strings.Cut(override, "=")
+		if !ok || key == "" {
+			return fmt.Errorf("invalid %s format: %q (expected key=value)", flag, override)
 		}
-		key, rawValue := parts[0], parts[1]
-		setNestedValue(values, strings.Split(key, "."), parseValue(rawValue))
+		path, err := splitKeyPath(key)
+		if err != nil {
+			return fmt.Errorf("invalid %s key in %q: %w", flag, override, err)
+		}
+		setNestedValue(values, path, parse(rawValue))
 	}
 	return nil
+}
+
+// splitKeyPath splits a --set key on dots. A backslash escapes a dot, so
+// `annotations.nginx\.ingress\.kubernetes\.io/rewrite-target` addresses one
+// annotation key.
+func splitKeyPath(key string) ([]string, error) {
+	var path []string
+	var cur strings.Builder
+	for i := 0; i < len(key); i++ {
+		switch c := key[i]; {
+		case c == '\\' && i+1 < len(key) && key[i+1] == '.':
+			cur.WriteByte('.')
+			i++
+		case c == '.':
+			path = append(path, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	path = append(path, cur.String())
+	for _, segment := range path {
+		if segment == "" {
+			return nil, fmt.Errorf("empty path segment in %q", key)
+		}
+	}
+	return path, nil
 }
 
 func setNestedValue(obj map[string]interface{}, keys []string, value interface{}) {
@@ -99,20 +180,22 @@ func setNestedValue(obj map[string]interface{}, keys []string, value interface{}
 	}
 }
 
+// parseValue types a --set value. Numbers are only typed when they survive a
+// round trip unchanged, so image tags like "1.10" or "1.0" and zero-padded
+// strings like "0123" stay strings instead of silently becoming 1.1, 1 or 123.
 func parseValue(s string) interface{} {
-	if s == "true" {
+	switch s {
+	case "true":
 		return true
-	}
-	if s == "false" {
+	case "false":
 		return false
-	}
-	if s == "null" {
+	case "null":
 		return nil
 	}
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil && strconv.FormatInt(i, 10) == s {
 		return i
 	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
+	if f, err := strconv.ParseFloat(s, 64); err == nil && strconv.FormatFloat(f, 'f', -1, 64) == s {
 		return f
 	}
 	return s

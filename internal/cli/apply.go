@@ -32,9 +32,8 @@ func newApplyCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "target namespace for resources")
-	cmd.Flags().StringVarP(&opts.valuesFile, "values", "f", "", "path to values file (JSON or YAML, overrides auto-detect)")
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: yaml or json (default: no output)")
-	cmd.Flags().StringArrayVar(&opts.setValues, "set", nil, "override values (e.g. --set replicas=5)")
+	addValuesFlags(cmd, &opts.templateOpts)
 	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "skip cache, re-download remote source")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
 	cmd.Flags().BoolVar(&opts.createNamespace, "create-namespace", false, "create namespace if it does not exist")
