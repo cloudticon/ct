@@ -372,3 +372,24 @@ func TestImportToURL(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateDevDts_EnvAcceptsBooleanDefaults(t *testing.T) {
+	dts := generateDevDts(nil, []string{"DEBUG"})
+
+	assert.Contains(t, dts, "declare function env(name: CtEnvKey, defaultValue: boolean): boolean;")
+	assert.Contains(t, dts, "declare function env(name: string, defaultValue: boolean): boolean;")
+}
+
+func TestCollectUniqueWorkloadNames_UsesDevReleaseName(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(`
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: Release.name + "-web" },
+  spec: { selector: { matchLabels: { app: "web" } } },
+});
+`), 0o644))
+
+	assert.Equal(t, []string{"dev-web"}, collectUniqueWorkloadNames(dir))
+}

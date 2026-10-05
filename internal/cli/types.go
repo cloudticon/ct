@@ -241,9 +241,12 @@ func collectUniqueWorkloadNames(dir string) []string {
 	}
 
 	resources, err := engine.Execute(engine.ExecuteOpts{
-		JSCode:  js,
-		Values:  values,
-		Timeout: renderTimeout,
+		JSCode: js,
+		Values: values,
+		// ct dev's default --name, so names built from Release.name match
+		// what ct dev renders.
+		ReleaseName: "dev",
+		Timeout:     renderTimeout,
 	})
 	if err != nil {
 		return nil
@@ -319,9 +322,11 @@ func generateDevDts(resourceNames, envKeys []string) string {
 
 	buf.WriteString("declare function env(name: CtEnvKey): string;\n")
 	buf.WriteString("declare function env(name: CtEnvKey, defaultValue: number): number;\n")
+	buf.WriteString("declare function env(name: CtEnvKey, defaultValue: boolean): boolean;\n")
 	buf.WriteString("declare function env(name: CtEnvKey, defaultValue: string): string;\n")
 	buf.WriteString("declare function env(name: string): string;\n")
 	buf.WriteString("declare function env(name: string, defaultValue: number): number;\n")
+	buf.WriteString("declare function env(name: string, defaultValue: boolean): boolean;\n")
 	buf.WriteString("declare function env(name: string, defaultValue: string): string;\n")
 
 	return buf.String()
