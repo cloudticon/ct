@@ -133,6 +133,9 @@ func silenceDevLog(t *testing.T) {
 	origSpinner := startSpinner
 	startSpinner = func(string) progressSpinner { return noopSpinner{} }
 	t.Cleanup(func() { startSpinner = origSpinner })
+
+	// Reconnect immediately unless a test opts into a backoff.
+	noRetryBackoff(t)
 }
 
 type noopSpinner struct{}
@@ -797,3 +800,108 @@ func (r recordingSpinner) Success(args ...any) {
 	}
 }
 func (recordingSpinner) Fail(_ ...any) {}
+
+func noRetryBackoff(t *testing.T) {
+	t.Helper()
+	orig := sessionRetryBackoff
+	sessionRetryBackoff = 0
+	t.Cleanup(func() { sessionRetryBackoff = orig })
+}
+
+// The health watcher's error for a crashed container contains "exit code 1";
+// it used to be mistaken for the user's terminal command exiting, so ct dev
+// quit instead of reconnecting once the container was restarted.
+func TestStartDevFeatures_ReconnectsWhenContainerCrashes(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	var execCalls int32
+	dc.ExecFn = func(ctx context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		if atomic.AddInt32(&execCalls, 1) == 1 {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	var watchCalls int32
+	dc.WatchPodFn = func(ctx context.Context, _ string, _ string) error {
+		if atomic.AddInt32(&watchCalls, 1) == 1 {
+			return errors.New(`pod "web-x": container "app" has terminated (Error, exit code 1)`)
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+	assert.Equal(t, 2, dc.TerminalCalls(), "a crashed container must lead to a reconnect, not to exiting ct dev")
+}
+
+// "waiting for pod to restart" used to retry immediately: five attempts were
+// burnt within a second, too fast to survive a network blip or a restart.
+func TestStartDevFeatures_BacksOffBetweenAttempts(t *testing.T) {
+	silenceDevLog(t)
+	orig := sessionRetryBackoff
+	sessionRetryBackoff = 60 * time.Millisecond
+	t.Cleanup(func() { sessionRetryBackoff = orig })
+
+	dc := newDevCluster()
+	var mu sync.Mutex
+	var calls []time.Time
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, time.Now())
+		if len(calls) < 3 {
+			return errors.New("connection lost")
+		}
+		return nil
+	}
+
+	require.NoError(t, startDevFeatures(context.Background(), dc, "ns",
+		[]Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+	require.Len(t, calls, 3)
+	assert.GreaterOrEqual(t, calls[1].Sub(calls[0]), 60*time.Millisecond)
+	assert.GreaterOrEqual(t, calls[2].Sub(calls[1]), 120*time.Millisecond, "backoff should grow")
+}
+
+func TestStartDevFeatures_CancelDuringBackoffReturnsPromptly(t *testing.T) {
+	silenceDevLog(t)
+	orig := sessionRetryBackoff
+	sessionRetryBackoff = time.Hour
+	t.Cleanup(func() { sessionRetryBackoff = orig })
+
+	dc := newDevCluster()
+	ctx, cancel := context.WithCancel(context.Background())
+	dc.ExecFn = func(_ context.Context, _ string, _ k8s.Selector, _ k8s.ExecOpts) error {
+		time.AfterFunc(20*time.Millisecond, cancel)
+		return errors.New("connection lost")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- startDevFeatures(ctx, dc, "ns", []Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{})
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("startDevFeatures did not return after cancel during backoff")
+	}
+}
+
+// Ctrl+C (the parent context being cancelled) is how a dev session ends; it
+// used to surface as "starting dev features: context canceled" and exit 1.
+func TestStartDevFeatures_CancelledWhileWaitingForPodIsNotAnError(t *testing.T) {
+	silenceDevLog(t)
+
+	dc := newDevCluster()
+	dc.WaitPodFn = func(ctx context.Context, _ string, _ k8s.Selector) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(20*time.Millisecond, cancel)
+
+	require.NoError(t, startDevFeatures(ctx, dc, "ns", []Target{{Name: "web", Terminal: "bash"}}, &bytes.Buffer{}))
+}

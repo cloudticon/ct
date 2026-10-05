@@ -27,6 +27,22 @@ const maxSessionRetries = 5
 
 var sessionEstablishedThreshold = 10 * time.Second
 
+// sessionRetryBackoff is the wait before the first reconnect; it doubles for
+// every further attempt, up to maxSessionRetryBackoff.
+var (
+	sessionRetryBackoff    = time.Second
+	maxSessionRetryBackoff = 8 * time.Second
+)
+
+// podLostError marks a session that ended because the pod went away or
+// became unhealthy (reported by the health watcher). It is always worth a
+// reconnect, even if the message mentions an exit code of a crashed
+// container.
+type podLostError struct{ err error }
+
+func (e *podLostError) Error() string { return e.err.Error() }
+func (e *podLostError) Unwrap() error { return e.err }
+
 type RunOpts struct {
 	Dir             string
 	EnvFile         string
@@ -72,12 +88,14 @@ func (p ptermSpinnerAdapter) Fail(args ...any)    { p.SpinnerPrinter.Fail(args..
 // terminal exits cleanly, when ctx is cancelled, or when retries are exhausted.
 //
 // The retry policy:
+//   - ctx cancellation (Ctrl+C) ends the session successfully
 //   - no retries when no target has a terminal (background features fail-fast)
+//   - the pod going away or becoming unhealthy (health watcher) always retries
 //   - exit code 130 (Ctrl+C) returns success
 //   - non-pod-kill exit codes return the error verbatim (caller-driven exit)
 //   - exit codes 137/143 (SIGKILL/SIGTERM, i.e. pod restart) and connection
-//     errors retry up to maxSessionRetries; counter resets after a session
-//     stays up for sessionEstablishedThreshold.
+//     errors retry up to maxSessionRetries with exponential backoff; the
+//     counter resets after a session stays up for sessionEstablishedThreshold.
 func startDevFeatures(ctx context.Context, cluster k8s.Cluster, namespace string, targets []Target, stdout io.Writer) error {
 	if len(targets) == 0 {
 		return nil
@@ -89,17 +107,24 @@ func startDevFeatures(ctx context.Context, cluster k8s.Cluster, namespace string
 		sessionStart := time.Now()
 		err := runDevSession(ctx, cluster, namespace, targets, stdout, hasTerminal, attempt > 0)
 
-		if err == nil || ctx.Err() != nil {
-			return err
+		if ctx.Err() != nil {
+			// Interrupted by the user: that is how a dev session ends.
+			return nil
+		}
+		if err == nil {
+			return nil
 		}
 		if !hasTerminal {
 			return err
 		}
-		if isTerminalExitCode130(err) {
-			return nil
-		}
-		if isCommandExit(err) && !isPodKilledExit(err) {
-			return err
+		var lost *podLostError
+		if !errors.As(err, &lost) {
+			if isTerminalExitCode130(err) {
+				return nil
+			}
+			if isCommandExit(err) && !isPodKilledExit(err) {
+				return err
+			}
 		}
 		if time.Since(sessionStart) >= sessionEstablishedThreshold {
 			attempt = 0
@@ -110,6 +135,36 @@ func startDevFeatures(ctx context.Context, cluster k8s.Cluster, namespace string
 
 		devLog.Printf("[terminal] disconnected: %v", err)
 		devLog.Printf("[terminal] waiting for pod to restart (attempt %d/%d)...", attempt+2, maxSessionRetries)
+		if !sleepCtx(ctx, retryBackoff(attempt)) {
+			return nil
+		}
+	}
+}
+
+// retryBackoff returns the wait before reconnect attempt+1.
+func retryBackoff(attempt int) time.Duration {
+	d := sessionRetryBackoff
+	for i := 0; i < attempt && d < maxSessionRetryBackoff; i++ {
+		d *= 2
+	}
+	if d > maxSessionRetryBackoff {
+		d = maxSessionRetryBackoff
+	}
+	return d
+}
+
+// sleepCtx waits for d and reports whether it did so without ctx ending.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 
@@ -197,7 +252,10 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 		if hasTerminal && strings.TrimSpace(target.Terminal) != "" {
 			podName := podNames[target.Name]
 			startFeature(func(gctx context.Context) error {
-				return cluster.WatchPod(gctx, namespace, podName)
+				if err := cluster.WatchPod(gctx, namespace, podName); err != nil {
+					return &podLostError{err: err}
+				}
+				return nil
 			})
 		}
 	}
