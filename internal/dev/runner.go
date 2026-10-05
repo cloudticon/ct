@@ -470,7 +470,7 @@ func Run(ctx context.Context, opts RunOpts) error {
 		return err
 	}
 
-	resources, err := renderMainResources(normalizedOpts.Dir, devResult.Namespace, devResult.Values)
+	resources, err := renderMainResources(normalizedOpts.Dir, devResult.Namespace, normalizedOpts.ReleaseName, devResult.Values)
 	if err != nil {
 		return err
 	}
@@ -614,7 +614,7 @@ func bundleEntry(dir, fileName string) (string, error) {
 	return jsCode, nil
 }
 
-func renderMainResources(dir, namespace string, overlayValues map[string]interface{}) ([]engine.Resource, error) {
+func renderMainResources(dir, namespace, releaseName string, overlayValues map[string]interface{}) ([]engine.Resource, error) {
 	mainCode, err := bundleEntry(dir, "main.ct")
 	if err != nil {
 		return nil, fmt.Errorf("bundling main.ct: %w", err)
@@ -627,9 +627,10 @@ func renderMainResources(dir, namespace string, overlayValues map[string]interfa
 
 	mergedValues := DeepMergeValues(baseValues, overlayValues)
 	resources, err := engine.Execute(engine.ExecuteOpts{
-		JSCode:    mainCode,
-		Values:    mergedValues,
-		Namespace: namespace,
+		JSCode:      mainCode,
+		Values:      mergedValues,
+		Namespace:   namespace,
+		ReleaseName: releaseName, // Release.name, as with ct template/apply
 	})
 	if err != nil {
 		return nil, fmt.Errorf("executing main.ct: %w", err)

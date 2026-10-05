@@ -1222,3 +1222,38 @@ func TestLoadEnvVars_MissingRequiredFileIsAnError(t *testing.T) {
 	_, err = loadEnvVars(t.TempDir(), ".env", false)
 	require.NoError(t, err, "the default .env is optional")
 }
+
+// main.ct was rendered without the release name, so `Release.name` was ""
+// under ct dev while ct template/apply set it: names built from it differed
+// (e.g. "-web" instead of "dev-web") and dev targets did not match.
+func TestRun_MainCtSeesReleaseName(t *testing.T) {
+	silenceDevLog(t)
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(`
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: Release.name + "-web" },
+  spec: {
+    selector: { matchLabels: { app: "web" } },
+    template: { metadata: { labels: { app: "web" } }, spec: { containers: [{ name: "app", image: "web:1" }] } },
+  },
+});
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dev.ct"), []byte(`config({ namespace: "dev" })
+dev("my-dev-web", { terminal: "sh" })
+`), 0o644))
+
+	fake := k8stest.NewFake()
+	fake.AddPod(&k8stest.FakePod{Name: "web-x", Namespace: "dev", Labels: k8s.Selector{"app": "web"}, Healthy: true})
+	fake.ExecHook = func(_, _ string, _ k8s.ExecOpts) error { return nil }
+	useFakeCluster(t, fake)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, Run(ctx, RunOpts{Dir: dir, ReleaseName: "my-dev", Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}))
+	require.Len(t, fake.ApplyCalls, 1)
+	meta := fake.ApplyCalls[0].Resources[0]["metadata"].(map[string]interface{})
+	assert.Equal(t, "my-dev-web", meta["name"])
+}
