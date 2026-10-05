@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -302,3 +304,46 @@ type staticSizeQueue struct {
 }
 
 func (q *staticSizeQueue) Next() *remotecommand.TerminalSize { return &q.size }
+
+// Resizing a window sends bursts of SIGWINCH. When a size was still pending,
+// the newer size was dropped and the stale one kept, so the remote terminal
+// could end up with the wrong dimensions until the next resize.
+func TestTermSizeQueue_KeepsLatestSize(t *testing.T) {
+	origGetSize := getTermSizeFn
+	t.Cleanup(func() { getTermSizeFn = origGetSize })
+
+	var mu sync.Mutex
+	current := [2]int{80, 24}
+	calls := 0
+	getTermSizeFn = func(int) (int, int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		return current[0], current[1], nil
+	}
+	resize := func(w, h int) {
+		mu.Lock()
+		current = [2]int{w, h}
+		mu.Unlock()
+	}
+	sizeCalls := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
+
+	q := newTermSizeQueue(0) // initial 80x24 is pending
+	defer q.stop()
+
+	resize(100, 30)
+	q.sigCh <- syscall.SIGWINCH
+	require.Eventually(t, func() bool { return sizeCalls() == 2 }, time.Second, time.Millisecond)
+	resize(120, 40)
+	q.sigCh <- syscall.SIGWINCH
+	require.Eventually(t, func() bool { return sizeCalls() == 3 }, time.Second, time.Millisecond)
+	time.Sleep(20 * time.Millisecond) // let the monitor finish queueing
+
+	size := q.Next()
+	require.NotNil(t, size)
+	assert.Equal(t, remotecommand.TerminalSize{Width: 120, Height: 40}, *size, "the latest size must win over a stale pending one")
+}
