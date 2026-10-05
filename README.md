@@ -215,7 +215,7 @@ Error: lib/factory.ct:3:10: Error: name is required [runtime]
     at main.ct:4:5
 ```
 
-With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`):
+With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `invalid-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`, `namespace-not-found`, or `error` for anything else):
 
 ```json
 {

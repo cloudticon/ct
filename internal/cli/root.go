@@ -42,7 +42,7 @@ func Execute() error {
 func PrintError(w io.Writer, err error) {
 	var list diag.List
 	if !errors.As(err, &list) {
-		list = diag.List{{Code: "error", Message: err.Error()}}
+		list = diag.List{{Code: diag.CodeError, Message: err.Error()}}
 	}
 	if errorFormat == "json" {
 		_, _ = w.Write(diag.JSON(list))

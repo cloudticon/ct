@@ -95,7 +95,7 @@ func applyError(err error) error {
 	if errors.As(err, &status) && apierrors.IsNotFound(err) && status.ErrStatus.Details != nil &&
 		status.ErrStatus.Details.Kind == "namespaces" {
 		return diag.List{{
-			Code:    "namespace-not-found",
+			Code:    diag.CodeNamespaceNotFound,
 			Message: fmt.Sprintf("apply failed: %v", err),
 			Hint:    "pass --create-namespace, or register a Namespace object in main.ct",
 		}}

@@ -13,18 +13,19 @@ import (
 
 // Stable diagnostic codes. Tools may match on them; don't rename.
 const (
-	CodeSyntax           = "syntax"
-	CodeImport           = "import"
-	CodeAsync            = "async-not-supported"
-	CodeRuntime          = "runtime"
-	CodeTimeout          = "timeout"
-	CodeDuplicate        = "duplicate-resource"
-	CodeInvalidResource  = "invalid-resource"
-	CodeUnknownKind      = "unknown-kind"
-	CodeUnknownField     = "unknown-field"
-	CodeInvalidValue     = "invalid-value"
-	CodeMissingField     = "missing-field"
-	CodeNamespaceOnScope = "namespace-on-cluster-scoped"
+	CodeError             = "error" // anything without a more specific code
+	CodeSyntax            = "syntax"
+	CodeImport            = "import"
+	CodeAsync             = "async-not-supported"
+	CodeRuntime           = "runtime"
+	CodeTimeout           = "timeout"
+	CodeDuplicate         = "duplicate-resource"
+	CodeInvalidResource   = "invalid-resource"
+	CodeUnknownKind       = "unknown-kind"
+	CodeUnknownField      = "unknown-field"
+	CodeInvalidValue      = "invalid-value"
+	CodeMissingField      = "missing-field"
+	CodeNamespaceNotFound = "namespace-not-found"
 )
 
 // Frame is a position in a .ct/.ts source file.
