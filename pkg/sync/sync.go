@@ -261,62 +261,31 @@ func collectFiles(root string, exclude []string) ([]string, error) {
 }
 
 func writeTarFromFiles(w io.Writer, root string, relPaths []string) (int64, error) {
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return 0, err
-	}
-
-	tw := tar.NewWriter(w)
-	defer tw.Close()
-
-	var total int64
-	for _, rel := range relPaths {
-		rel = filepath.ToSlash(rel)
-		srcPath := filepath.Join(absRoot, filepath.FromSlash(rel))
-		info, err := os.Stat(srcPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return total, err
-		}
-		if info.IsDir() {
-			continue
-		}
-
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			return total, err
-		}
-		header.Name = rel
-
-		if err := tw.WriteHeader(header); err != nil {
-			return total, err
-		}
-		file, err := os.Open(srcPath)
-		if err != nil {
-			return total, err
-		}
-		n, err := io.Copy(tw, file)
-		_ = file.Close()
-		if err != nil {
-			return total, err
-		}
-		total += n
-	}
-	return total, tw.Close()
+	_, size, err := writeTar(w, root, relPaths)
+	return size, err
 }
 
 func writeTarFromRelativePaths(w io.Writer, root string, relPaths []string) (int, error) {
+	files, _, err := writeTar(w, root, relPaths)
+	return files, err
+}
+
+// writeTar archives the regular files among relPaths (relative to root) and
+// returns how many files and bytes it wrote. Paths that vanished, and
+// anything that is not a regular file (directories, FIFOs, sockets,
+// devices), are skipped: opening a FIFO blocks forever and sockets cannot be
+// archived. Each file is read completely before its header is written, so a
+// file that changes while being archived yields a consistent entry instead
+// of a corrupt archive ("archive/tar: write too long").
+func writeTar(w io.Writer, root string, relPaths []string) (int, int64, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 
 	tw := tar.NewWriter(w)
-	defer tw.Close()
-
-	written := 0
+	files := 0
+	var size int64
 	for _, rel := range relPaths {
 		rel = filepath.ToSlash(rel)
 		srcPath := filepath.Join(absRoot, filepath.FromSlash(rel))
@@ -325,31 +294,33 @@ func writeTarFromRelativePaths(w io.Writer, root string, relPaths []string) (int
 			if os.IsNotExist(err) {
 				continue
 			}
-			return written, err
+			return files, size, err
 		}
-		if info.IsDir() {
+		if !info.Mode().IsRegular() {
 			continue
+		}
+		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return files, size, err
 		}
 
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
-			return written, err
+			return files, size, err
 		}
 		header.Name = rel
+		header.Size = int64(len(data))
 		if err := tw.WriteHeader(header); err != nil {
-			return written, err
+			return files, size, err
 		}
-
-		file, err := os.Open(srcPath)
-		if err != nil {
-			return written, err
+		if _, err := tw.Write(data); err != nil {
+			return files, size, err
 		}
-		_, err = io.Copy(tw, file)
-		_ = file.Close()
-		if err != nil {
-			return written, err
-		}
-		written++
+		files++
+		size += int64(len(data))
 	}
-	return written, tw.Close()
+	return files, size, tw.Close()
 }
