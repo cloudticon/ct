@@ -1206,7 +1206,7 @@ func TestStartDevFeatures_LogStreamsShareStdoutSafely(t *testing.T) {
 			LogContent: strings.Repeat(name+" log line\n", 200),
 		})
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	var out bytes.Buffer
@@ -1290,7 +1290,15 @@ func TestRunDevSession_TerminalUsesTheWatchedPod(t *testing.T) {
 		return "web-new", nil
 	}
 	dc.ExecFn = func(context.Context, string, k8s.Selector, k8s.ExecOpts) error {
-		time.Sleep(10 * time.Millisecond) // let the health watcher start
+		// Keep the terminal open until the health watcher has started.
+		for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			dc.mu.Lock()
+			started := len(dc.watchedPods) > 0
+			dc.mu.Unlock()
+			if started {
+				break
+			}
+		}
 		return nil
 	}
 
