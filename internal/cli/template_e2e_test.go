@@ -519,6 +519,33 @@ func TestTemplateE2E_RejectsInvalidReleaseName(t *testing.T) {
 	assert.Contains(t, list[0].Message, `invalid release name "My_App"`)
 }
 
+func TestTemplateE2E_RemoteSourceErrorsPointAtItsOwnFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cacheRoot := filepath.Join(home, ".ct", "cache", "github.com")
+	lib := filepath.Join(cacheRoot, "acme", "lib@v1")
+	project := filepath.Join(cacheRoot, "acme", "infra@v1")
+	require.NoError(t, os.MkdirAll(lib, 0o755))
+	require.NoError(t, os.MkdirAll(project, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(lib, "index.ts"), []byte(`
+export function configMap(args: any) {
+  const { name, ...rest } = args;
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name }, ...rest });
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(project, "main.ct"), []byte(`import { configMap } from "github.com/acme/lib@v1";
+
+configMap({ name: "cfg", spec: {} });
+`), 0o644))
+
+	_, _, err := runTemplateE2E(t, "demo", "github.com/acme/infra@v1")
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, "main.ct", list[0].File, "%s", list[0])
+	assert.Equal(t, 3, list[0].Line)
+}
+
 // --- helpers ---
 
 func splitYAMLDocs(t *testing.T, raw string) []map[string]interface{} {

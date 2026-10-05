@@ -440,3 +440,61 @@ func TestBundle_PackageSubPathCannotLeaveThePackage(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "leaves its package")
 }
+
+func TestBundle_SyntaxErrorNextToAsyncLikeNameIsASyntaxError(t *testing.T) {
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte("const o = { name: workerName asyncWorker: true };\n"), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeSyntax, list[0].Code)
+	assert.Contains(t, list[0].Message, `Expected "}" but found "asyncWorker"`)
+}
+
+func TestBundle_RejectsEveryAsyncForm(t *testing.T) {
+	for _, src := range []string{
+		"async function f() {}",
+		"const f = async () => 1;",
+		"const x = await g();",
+		"async function* gen() {}",
+		"class A { async m() {} }",
+	} {
+		dir := t.TempDir()
+		entry := filepath.Join(dir, "main.ct")
+		require.NoError(t, os.WriteFile(entry, []byte(src+"\n"), 0o644))
+
+		_, err := engine.NewTranspiler(dir).Bundle(entry)
+
+		var list diag.List
+		require.ErrorAs(t, err, &list, src)
+		assert.Equal(t, diag.CodeAsync, list[0].Code, src)
+	}
+}
+
+func TestDisplayPath_ProjectInsideCacheStaysRelative(t *testing.T) {
+	pkgDir := setupFakeCache(t, "github.com", "acme", "infra", "v1")
+	other := filepath.Join(filepath.Dir(filepath.Dir(pkgDir)), "cloudticon", "k8s@master", "resource.ts")
+
+	assert.Equal(t, "main.ct", engine.DisplayPath(filepath.Join(pkgDir, "main.ct"), pkgDir))
+	assert.Equal(t, "github.com/cloudticon/k8s@master/resource.ts", engine.DisplayPath(other, pkgDir))
+}
+
+func TestBundle_RefreshKeepsPackagesMarkedFresh(t *testing.T) {
+	// A remote source importing its own repository: the CLI already
+	// re-downloaded it, so refreshing must not delete it mid-bundle.
+	pkgDir := setupFakeCache(t, "github.com", "acme", "infra", "v1")
+	writeTS(t, pkgDir, "lib/x.ts", `export const x = "from-self";`)
+	writeTS(t, pkgDir, "main.ct", `import { x } from "github.com/acme/infra@v1/lib/x"; console.log(x);`)
+
+	tr := engine.NewTranspiler(pkgDir)
+	tr.RefreshPackages = true
+	tr.MarkFresh("https://github.com/acme/infra@v1")
+	js, err := tr.Bundle(filepath.Join(pkgDir, "main.ct"))
+
+	require.NoError(t, err)
+	assert.Contains(t, js, "from-self")
+	assert.DirExists(t, pkgDir)
+}

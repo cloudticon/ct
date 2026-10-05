@@ -58,6 +58,7 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 	}
 
 	opts.templateOpts.releaseName = releaseName
+	opts.templateOpts.sourceURL = remoteSourceURL(source)
 	resources, err := renderResourcesForApply(resolvedDir, opts.templateOpts)
 	if err != nil {
 		return err

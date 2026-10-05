@@ -16,10 +16,25 @@ import (
 
 type Transpiler struct {
 	projectDir string
-	// RefreshPackages re-downloads every imported package once per Bundle
-	// instead of trusting the cache; branch versions like @master otherwise
-	// stay at whatever was fetched first.
+	// RefreshPackages re-downloads every imported package once instead of
+	// trusting the cache; branch versions like @master otherwise stay at
+	// whatever was fetched first.
 	RefreshPackages bool
+
+	mu        sync.Mutex
+	refreshed map[string]bool
+}
+
+// MarkFresh records that a package URL was already re-downloaded in this run
+// (e.g. the remote source being rendered), so RefreshPackages doesn't delete
+// it again while it is being bundled.
+func (t *Transpiler) MarkFresh(url string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.refreshed == nil {
+		t.refreshed = map[string]bool{}
+	}
+	t.refreshed[url] = true
 }
 
 func NewTranspiler(projectDir string) *Transpiler {
@@ -105,7 +120,7 @@ func asyncDetectPlugin() api.Plugin {
 					})
 					var errs []api.Message
 					for _, m := range check.Errors {
-						if strings.Contains(m.Text, "async") || strings.Contains(m.Text, "await") {
+						if isAsyncError(m.Text) {
 							errs = append(errs, api.Message{Text: asyncMessage, Location: m.Location})
 						}
 					}
@@ -118,19 +133,32 @@ func asyncDetectPlugin() api.Plugin {
 	}
 }
 
+// isAsyncError matches esbuild's messages for async constructs it was told
+// not to support. Other errors (plain syntax errors) are left to the main
+// build, which reports them as they are.
+func isAsyncError(text string) bool {
+	return strings.HasPrefix(text, "Transforming async") ||
+		strings.HasPrefix(text, "Transforming for-await") ||
+		strings.HasPrefix(text, "Top-level await")
+}
+
 func (t *Transpiler) urlResolverPlugin() api.Plugin {
-	refreshed := map[string]bool{}
-	var mu sync.Mutex
+	// esbuild resolves imports in parallel. When refreshing, invalidate and
+	// re-download under one lock so no resolver hands out a directory that
+	// another one is deleting.
 	resolve := func(url string) (string, error) {
-		if t.RefreshPackages {
-			mu.Lock()
-			first := !refreshed[url]
-			refreshed[url] = true
-			mu.Unlock()
-			if first {
-				if err := cache.Invalidate(url); err != nil {
-					return "", err
-				}
+		if !t.RefreshPackages {
+			return cache.Resolve(url)
+		}
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.refreshed == nil {
+			t.refreshed = map[string]bool{}
+		}
+		if !t.refreshed[url] {
+			t.refreshed[url] = true
+			if err := cache.Invalidate(url); err != nil {
+				return "", err
 			}
 		}
 		return cache.Resolve(url)
@@ -250,13 +278,14 @@ func DisplayPath(path, baseDir string) string {
 	if !filepath.IsAbs(abs) {
 		abs = filepath.Join(baseDir, path)
 	}
-	if cacheDir, err := cache.CacheDir(); err == nil {
-		if rel, err := filepath.Rel(cacheDir, abs); err == nil && !strings.HasPrefix(rel, "..") {
+	// The project first: a remote source is itself inside the cache.
+	if baseDir != "" {
+		if rel, err := filepath.Rel(baseDir, abs); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.ToSlash(rel)
 		}
 	}
-	if baseDir != "" {
-		if rel, err := filepath.Rel(baseDir, abs); err == nil && !strings.HasPrefix(rel, "..") {
+	if cacheDir, err := cache.CacheDir(); err == nil {
+		if rel, err := filepath.Rel(cacheDir, abs); err == nil && !strings.HasPrefix(rel, "..") {
 			return filepath.ToSlash(rel)
 		}
 	}

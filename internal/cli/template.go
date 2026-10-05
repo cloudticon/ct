@@ -26,6 +26,8 @@ type templateOpts struct {
 	noCache         bool
 	releaseName     string
 	validate        bool
+	// sourceURL is the package URL of a remote source, "" for a local one.
+	sourceURL string
 }
 
 func newTemplateCmd() *cobra.Command {
@@ -70,6 +72,7 @@ func runTemplate(cmd *cobra.Command, releaseName, sourceDir string, opts templat
 	}
 
 	opts.releaseName = releaseName
+	opts.sourceURL = remoteSourceURL(sourceDir)
 	resources, err := renderResources(resolvedDir, opts)
 	if err != nil {
 		return err
@@ -97,6 +100,9 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 	}
 	tr := engine.NewTranspiler(absDir)
 	tr.RefreshPackages = opts.noCache
+	if opts.sourceURL != "" {
+		tr.MarkFresh(opts.sourceURL) // resolveSourceDir already re-downloaded it
+	}
 
 	values, err := engine.LoadValues(engine.ValuesOpts{
 		Files:     resolveValuesFiles(dir, opts.valuesFiles),

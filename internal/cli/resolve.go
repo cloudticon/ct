@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/cloudticon/ct/pkg/cache"
@@ -14,17 +15,12 @@ var (
 )
 
 func resolveSourceDir(arg string, noCache bool) (string, error) {
-	if !packages.IsGitPackage(arg) {
+	if remoteSourceURL(arg) == "" {
 		return arg, nil
 	}
 
-	pkgWithVersion, subPath := packages.SplitPackagePath(arg)
-	pkg, version := packages.SplitPackageVersion(pkgWithVersion)
-
-	url := "https://" + pkg
-	if version != "" {
-		url += "@" + version
-	}
+	url, _ := packages.ImportURL(arg)
+	_, subPath := packages.SplitPackagePath(arg)
 
 	if noCache {
 		if err := cacheInvalidateFn(url); err != nil {
@@ -38,4 +34,15 @@ func resolveSourceDir(arg string, noCache bool) (string, error) {
 	}
 
 	return filepath.Join(localDir, subPath), nil
+}
+
+// remoteSourceURL returns the package URL for a remote source argument, or
+// "" when arg is a local directory. An existing directory always wins, so a
+// local path like "my.app/deploy" isn't mistaken for a package.
+func remoteSourceURL(arg string) string {
+	if info, err := os.Stat(arg); err == nil && info.IsDir() {
+		return ""
+	}
+	url, _ := packages.ImportURL(arg)
+	return url
 }
