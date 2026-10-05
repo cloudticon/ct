@@ -52,6 +52,16 @@ func (c *client) applyRelease(ctx context.Context, namespace, releaseName string
 
 	orphaned := computeOrphaned(oldRefs, newRefs)
 
+	// Track old+new before touching the cluster: if apply fails halfway, the
+	// objects it already created stay in the inventory and a later run can
+	// still prune them. A first install skips this, because the release may
+	// create the namespace the inventory lives in.
+	if added := computeOrphaned(newRefs, oldRefs); len(added) > 0 && len(oldRefs) > 0 {
+		if err := saveInventoryRefs(ctx, c, namespace, releaseName, append(append([]ResourceRef{}, oldRefs...), added...)); err != nil {
+			return fmt.Errorf("saving inventory: %w", err)
+		}
+	}
+
 	if err := c.apply(ctx, resources); err != nil {
 		return fmt.Errorf("applying resources: %w", err)
 	}
@@ -106,6 +116,14 @@ func ensureNamespace(ctx context.Context, c *client, namespace string) error {
 // --- Inventory CRUD ---
 
 func saveInventory(ctx context.Context, c *client, namespace, releaseName string, resources []Resource) error {
+	refs, err := resourcesToRefs(resources)
+	if err != nil {
+		return err
+	}
+	return saveInventoryRefs(ctx, c, namespace, releaseName, refs)
+}
+
+func saveInventoryRefs(ctx context.Context, c *client, namespace, releaseName string, refs []ResourceRef) error {
 	if c == nil || c.CoreV1 == nil {
 		return errors.New("k8s client is required")
 	}
@@ -114,11 +132,6 @@ func saveInventory(ctx context.Context, c *client, namespace, releaseName string
 	}
 
 	targetNamespace, err := resolveInventoryNamespace(c, namespace)
-	if err != nil {
-		return err
-	}
-
-	refs, err := resourcesToRefs(resources)
 	if err != nil {
 		return err
 	}

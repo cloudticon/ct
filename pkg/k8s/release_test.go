@@ -253,3 +253,54 @@ func TestApplyRelease_EmptyResources(t *testing.T) {
 	err := c.applyRelease(context.Background(), "test-ns", "my-release", []Resource{})
 	require.NoError(t, err)
 }
+
+func TestApplyRelease_FailedApplyKeepsNewObjectsTracked(t *testing.T) {
+	c, dynClient := newReleaseTestClient(t)
+	c.Namespace = "test-ns"
+	seedInventory(t, c, "test-ns", "my-release", []ResourceRef{
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "cfg", Namespace: "test-ns"},
+	})
+	// The ConfigMap applies, the Deployment (applied after it) fails.
+	dynClient.PrependReactor("patch", "deployments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("apply boom")
+	})
+
+	resources := []Resource{
+		{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]interface{}{"name": "web", "namespace": "test-ns"}},
+		{"apiVersion": "v1", "kind": "Service", "metadata": map[string]interface{}{"name": "web", "namespace": "test-ns"}},
+		{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]interface{}{"name": "cfg", "namespace": "test-ns"}},
+	}
+
+	err := c.applyRelease(context.Background(), "test-ns", "my-release", resources)
+	require.Error(t, err)
+
+	refs, err := loadInventory(context.Background(), c, "test-ns", "my-release")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []ResourceRef{
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "cfg", Namespace: "test-ns"},
+		{APIVersion: "apps/v1", Kind: "Deployment", Name: "web", Namespace: "test-ns"},
+		{APIVersion: "v1", Kind: "Service", Name: "web", Namespace: "test-ns"},
+	}, refs, "the Service was created before the failure and must stay prunable")
+}
+
+func TestApplyRelease_PrunesObjectsFromAFailedRun(t *testing.T) {
+	c, dynClient := newReleaseTestClient(t)
+	c.Namespace = "test-ns"
+	seedInventory(t, c, "test-ns", "my-release", []ResourceRef{
+		{APIVersion: "v1", Kind: "ConfigMap", Name: "cfg", Namespace: "test-ns"},
+		{APIVersion: "v1", Kind: "Service", Name: "leftover", Namespace: "test-ns"},
+	})
+
+	resources := []Resource{
+		{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]interface{}{"name": "cfg", "namespace": "test-ns"}},
+	}
+	require.NoError(t, c.applyRelease(context.Background(), "test-ns", "my-release", resources))
+
+	var deleted []string
+	for _, a := range dynClient.Actions() {
+		if d, ok := a.(k8stesting.DeleteAction); ok {
+			deleted = append(deleted, d.GetName())
+		}
+	}
+	assert.Equal(t, []string{"leftover"}, deleted)
+}
