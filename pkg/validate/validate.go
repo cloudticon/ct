@@ -195,7 +195,35 @@ func checkMetadata(meta map[string]interface{}, kind string, builtin bool) field
 	}
 	errs = append(errs, metav1validation.ValidateLabels(labels, metaPath.Child("labels"))...)
 	errs = append(errs, apivalidation.ValidateAnnotations(annotations, metaPath.Child("annotations"))...)
-	return errs
+	return append(errs, checkFinalizers(meta["finalizers"], metaPath.Child("finalizers"))...)
+}
+
+// standardFinalizers may be used without a domain prefix.
+var standardFinalizers = map[string]bool{
+	"kubernetes":                     true,
+	metav1.FinalizerOrphanDependents: true,
+	metav1.FinalizerDeleteDependents: true,
+}
+
+func checkFinalizers(v interface{}, path *field.Path) field.ErrorList {
+	list, ok := v.([]interface{})
+	if !ok {
+		return nil // absent, or a type error strict decoding reports
+	}
+	var names []string
+	var errs field.ErrorList
+	for i, item := range list {
+		name, ok := item.(string)
+		if !ok {
+			continue
+		}
+		names = append(names, name)
+		if !strings.Contains(name, "/") && !standardFinalizers[name] {
+			errs = append(errs, field.Invalid(path.Index(i), name,
+				"name is neither a standard finalizer name nor is it fully qualified (use <domain>/<name>, e.g. example.com/cleanup)"))
+		}
+	}
+	return append(apivalidation.ValidateFinalizers(names, path), errs...)
 }
 
 // nameValidator returns the API server's name rule for a kind.

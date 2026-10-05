@@ -264,6 +264,11 @@ func TestValidate_Rejects(t *testing.T) {
 			[]want{{diag.CodeInvalidValue, "metadata.labels[version]", "must be a string"}},
 		},
 		{
+			"finalizer without a domain",
+			`{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "cfg", "finalizers": ["foo", "example.com/cleanup", "kubernetes"]}}`,
+			[]want{{diag.CodeInvalidValue, "metadata.finalizers[0]", "neither a standard finalizer name nor is it fully qualified"}},
+		},
+		{
 			"CRD name must be plural.group",
 			`{"apiVersion": "apiextensions.k8s.io/v1", "kind": "CustomResourceDefinition", "metadata": {"name": "widget"}, "spec": {"group": "example.com", "names": {"kind": "Widget", "plural": "widgets"}}}`,
 			[]want{{diag.CodeInvalidValue, "metadata.name", `"widgets.example.com"`}},
