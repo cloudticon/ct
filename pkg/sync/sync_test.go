@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -319,4 +320,31 @@ func TestSyncerRun_ChangeDuringInitialSyncIsSynced(t *testing.T) {
 			require.NoError(t, <-done)
 		})
 	}
+}
+
+// Deleting a directory with many files produces one event per file; each
+// used to cost its own exec round trip, stalling sync for minutes.
+func TestSyncerIncrementalSync_BatchesDeletes(t *testing.T) {
+	fake := &fakePodExecutor{}
+	s := NewSyncer(fake, "demo", map[string]string{"app": "x"}, SyncRule{From: t.TempDir(), To: "/app"})
+	s.podName = "pod-1"
+
+	var changes []FileChange
+	want := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		rel := fmt.Sprintf("dist/chunk-%04d.js", i)
+		changes = append(changes, FileChange{Path: rel, Type: ChangeDelete})
+		want["/app/"+rel] = true
+	}
+	require.NoError(t, s.incrementalSync(context.Background(), changes))
+
+	assert.LessOrEqual(t, len(fake.ExecCalls), 3, "deletes must be batched into few rm calls")
+	got := map[string]bool{}
+	for _, call := range fake.ExecCalls {
+		require.Equal(t, []string{"rm", "-rf"}, call.Command[:2])
+		for _, p := range call.Command[2:] {
+			got[p] = true
+		}
+	}
+	assert.Equal(t, want, got)
 }

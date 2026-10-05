@@ -209,16 +209,41 @@ func (s *Syncer) incrementalSync(ctx context.Context, changes []FileChange) erro
 	}
 
 	deletedCount := 0
-	for _, rel := range deleted {
-		remote := filepath.ToSlash(filepath.Join(s.rule.To, rel))
-		if err := s.execSimple(ctx, []string{"rm", "-rf", remote}); err != nil {
+	for _, batch := range rmBatches(s.rule.To, deleted) {
+		if err := s.execSimple(ctx, append([]string{"rm", "-rf"}, batch...)); err != nil {
 			return err
 		}
-		deletedCount++
+		deletedCount += len(batch)
 	}
 
 	log.Printf("%s %d files synced, %d deleted", color.CyanString("[sync]"), syncedCount, deletedCount)
 	return nil
+}
+
+// maxRmArgBytes caps the size of one rm command line, far below ARG_MAX.
+const maxRmArgBytes = 64 * 1024
+
+// rmBatches maps relative paths to container paths under to and groups them
+// into as few rm invocations as the argument size limit allows. Deleting a
+// directory produces one event per file; one exec per path would cost one
+// API round trip each.
+func rmBatches(to string, rels []string) [][]string {
+	var batches [][]string
+	var current []string
+	size := 0
+	for _, rel := range rels {
+		remote := filepath.ToSlash(filepath.Join(to, rel))
+		if len(current) > 0 && size+len(remote)+1 > maxRmArgBytes {
+			batches = append(batches, current)
+			current, size = nil, 0
+		}
+		current = append(current, remote)
+		size += len(remote) + 1
+	}
+	if len(current) > 0 {
+		batches = append(batches, current)
+	}
+	return batches
 }
 
 func collectFiles(root string, exclude []string) ([]string, error) {
