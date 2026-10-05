@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -997,4 +999,99 @@ func TestConvertTargets_EnvValues(t *testing.T) {
 	}}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "env[0].value")
+}
+
+const webDeploymentCT = `
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: "web" },
+  spec: {
+    selector: { matchLabels: { app: "web" } },
+    template: {
+      metadata: { labels: { app: "web" } },
+      spec: { containers: [{ name: "app", image: "web:1" }] },
+    },
+  },
+});
+`
+
+func writeDevProject(t *testing.T, devCT string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(webDeploymentCT), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dev.ct"), []byte(devCT), 0o644))
+	return dir
+}
+
+func useFakeCluster(t *testing.T, cluster k8s.Cluster) {
+	t.Helper()
+	orig := newClusterFn
+	newClusterFn = func(string, string) (k8s.Cluster, error) { return cluster, nil }
+	t.Cleanup(func() { newClusterFn = orig })
+}
+
+// Relative sync sources were resolved against the process working directory
+// instead of the project directory (RunOpts.Dir).
+func TestRun_SyncFromIsRelativeToProjectDir(t *testing.T) {
+	silenceDevLog(t)
+	t.Setenv("HOME", t.TempDir())
+	dir := writeDevProject(t, `config({ namespace: "dev" })
+dev("web", { sync: [{ from: "./src", to: "/app" }], terminal: "sh" })
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src", "index.js"), []byte("ok"), 0o644))
+
+	fake := k8stest.NewFake()
+	fake.AddPod(&k8stest.FakePod{Name: "web-x", Namespace: "dev", Labels: k8s.Selector{"app": "web"}, Healthy: true, Containers: []string{"app"}})
+	var mu sync.Mutex
+	var tarred []string
+	fake.ExecHook = func(_, _ string, opts k8s.ExecOpts) error {
+		if opts.Command[0] == "tar" {
+			body, err := io.ReadAll(opts.Stdin)
+			if err != nil {
+				return err
+			}
+			tr := tar.NewReader(bytes.NewReader(body))
+			for h, err := tr.Next(); err == nil; h, err = tr.Next() {
+				mu.Lock()
+				tarred = append(tarred, h.Name)
+				mu.Unlock()
+			}
+		}
+		return nil
+	}
+	useFakeCluster(t, fake)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := Run(ctx, RunOpts{Dir: dir, Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	require.NoError(t, err)
+	require.NoError(t, ctx.Err(), "Run should end with the terminal, not by timeout")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Contains(t, tarred, "index.js")
+}
+
+// A sync source that does not exist or is a file used to fail only after the
+// resources had been applied, with "stat ...: no such file or directory" or
+// "watch root must be a directory" and no hint which rule was wrong.
+func TestRun_InvalidSyncSourceFailsBeforeApply(t *testing.T) {
+	silenceDevLog(t)
+	t.Setenv("HOME", t.TempDir())
+	dir := writeDevProject(t, `config({ namespace: "dev" })
+dev("web", { sync: [{ from: "./package.json", to: "/app/package.json" }] })
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	fake := k8stest.NewFake()
+	useFakeCluster(t, fake)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := Run(ctx, RunOpts{Dir: dir, Stdin: strings.NewReader(""), Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `target "web": sync[0].from`)
+	assert.Contains(t, err.Error(), "not a directory")
+	assert.Empty(t, fake.ApplyCalls, "nothing should be applied for an invalid dev.ct")
 }

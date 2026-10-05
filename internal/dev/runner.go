@@ -449,6 +449,9 @@ func Run(ctx context.Context, opts RunOpts) error {
 	if err != nil {
 		return err
 	}
+	if err := resolveSyncSources(normalizedOpts.Dir, targets); err != nil {
+		return err
+	}
 
 	resources, err := renderMainResources(normalizedOpts.Dir, devResult.Namespace, devResult.Values)
 	if err != nil {
@@ -731,6 +734,31 @@ func parseSyncRules(targetName string, rawSync []map[string]interface{}) ([]Sync
 		rules = append(rules, rule)
 	}
 	return rules, nil
+}
+
+// resolveSyncSources makes relative sync sources relative to the project
+// directory (not the process working directory) and checks that they are
+// directories, before anything is applied to the cluster.
+func resolveSyncSources(dir string, targets []Target) error {
+	for i := range targets {
+		for j := range targets[i].Sync {
+			rule := &targets[i].Sync[j]
+			from := rule.From
+			if !filepath.IsAbs(from) {
+				from = filepath.Join(dir, from)
+			}
+			info, err := os.Stat(from)
+			if err != nil {
+				return fmt.Errorf("target %q: sync[%d].from %q: %w", targets[i].Name, j, rule.From, err)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("target %q: sync[%d].from %q is not a directory; sync copies a directory (use exclude to leave files out)",
+					targets[i].Name, j, rule.From)
+			}
+			rule.From = from
+		}
+	}
+	return nil
 }
 
 func parsePortRules(targetName string, rawPorts []interface{}) ([]PortRule, error) {
