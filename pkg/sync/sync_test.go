@@ -502,3 +502,64 @@ func TestSyncerInitialSync_CreatesTargetDirEvenWhenEmpty(t *testing.T) {
 	require.Len(t, fake.ExecCalls, 1)
 	assert.Equal(t, []string{"mkdir", "-p", "/app"}, fake.ExecCalls[0].Command)
 }
+
+// WaitPod only returns healthy pods. If the pod becomes unhealthy but keeps
+// running (e.g. a crash-looping sidecar), the periodic pod check must not
+// stall the sync loop: changes still have to reach the running container.
+func TestSyncerRun_PeriodicPodCheckDoesNotBlockSync(t *testing.T) {
+	setPodCheckInterval(t, 20*time.Millisecond)
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644))
+
+	var mu sync.Mutex
+	waits := 0
+	var tarred []string
+	fake := &fakePodExecutor{
+		WaitFn: func(ctx context.Context, _ string, _ k8s.Selector) (string, error) {
+			mu.Lock()
+			waits++
+			first := waits == 1
+			mu.Unlock()
+			if first {
+				return "pod-1", nil
+			}
+			<-ctx.Done() // no healthy pod any more
+			return "", ctx.Err()
+		},
+		ExecFn: func(_ context.Context, _, _ string, opts k8s.ExecOpts) error {
+			if opts.Command[0] == "tar" {
+				names := tarEntryNames(t, opts.Stdin)
+				mu.Lock()
+				tarred = append(tarred, names...)
+				mu.Unlock()
+			}
+			return nil
+		},
+	}
+	s := NewSyncer(fake, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app", Polling: true})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return waits >= 2
+	}, 2*time.Second, 5*time.Millisecond, "periodic check should have started")
+	require.NoError(t, os.WriteFile(filepath.Join(root, "b.txt"), []byte("y"), 0o644))
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, n := range tarred {
+			if n == "b.txt" {
+				return true
+			}
+		}
+		return false
+	}, 3*time.Second, 10*time.Millisecond, "sync stalled behind the pod check")
+
+	cancel()
+	require.NoError(t, <-done)
+}

@@ -136,17 +136,20 @@ func (s *Syncer) run(ctx context.Context, signalReady func()) error {
 			if s.podName == "" {
 				// The last re-sync failed; a successful full sync also
 				// covers this batch.
-				s.followPod(ctx)
+				s.followPod(ctx, 0)
 				continue
 			}
 			if err := s.incrementalSync(ctx, batch); err != nil && ctx.Err() == nil {
 				log.Printf("%s incremental sync error: %v", color.YellowString("[sync]"), err)
 				// The usual cause is that the pod is gone; move on to its
 				// replacement (the full sync covers this batch as well).
-				s.followPod(ctx)
+				s.followPod(ctx, 0)
 			}
 		case <-podCheck.C:
-			s.followPod(ctx)
+			// Bounded: WaitPod only returns healthy pods, and a pod that is
+			// unhealthy but running (e.g. a crash-looping sidecar) must not
+			// stall syncing into it.
+			s.followPod(ctx, podCheckInterval)
 		}
 	}
 }
@@ -154,9 +157,16 @@ func (s *Syncer) run(ctx context.Context, signalReady func()) error {
 // followPod re-resolves the target pod and, when it has been replaced (a
 // rollout, an eviction, or the rollout triggered by ct dev's own workload
 // patch while the old pod was still running), runs a full sync into the new
-// pod: it starts from the image and has none of the synced files.
-func (s *Syncer) followPod(ctx context.Context) {
-	pod, err := s.exec.WaitPod(ctx, s.namespace, s.selector)
+// pod: it starts from the image and has none of the synced files. A positive
+// maxWait bounds how long to wait for a healthy pod.
+func (s *Syncer) followPod(ctx context.Context, maxWait time.Duration) {
+	waitCtx := ctx
+	if maxWait > 0 {
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, maxWait)
+		defer cancel()
+	}
+	pod, err := s.exec.WaitPod(waitCtx, s.namespace, s.selector)
 	if err != nil || pod == s.podName {
 		return
 	}
