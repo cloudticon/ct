@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -336,10 +336,10 @@ func TestTermSizeQueue_KeepsLatestSize(t *testing.T) {
 	defer q.stop()
 
 	resize(100, 30)
-	q.sigCh <- syscall.SIGWINCH
+	q.sigCh <- os.Interrupt // the monitor ignores the value (SIGWINCH is not portable)
 	require.Eventually(t, func() bool { return sizeCalls() == 2 }, time.Second, time.Millisecond)
 	resize(120, 40)
-	q.sigCh <- syscall.SIGWINCH
+	q.sigCh <- os.Interrupt
 	require.Eventually(t, func() bool { return sizeCalls() == 3 }, time.Second, time.Millisecond)
 	time.Sleep(20 * time.Millisecond) // let the monitor finish queueing
 
