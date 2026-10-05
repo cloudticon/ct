@@ -26,6 +26,74 @@ ct apply my-app . -n prod       # render + validate + server-side apply + prune
 - **Agent-ready.** `ct init` writes an `AGENTS.md`, output is deterministic, every diagnostic has a stable code, and git never blocks on a password prompt.
 - **One static binary.** No Node.js, no Tiller, no plugins.
 
+## Helm vs ct, side by side
+
+The same Deployment, with labels and an optional `env` map from values.
+
+**Helm** (`templates/deployment.yaml` + `_helpers.tpl`):
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}
+  labels:
+    {{- include "app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "app.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: web
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          {{- with .Values.env }}
+          env:
+            {{- range $k, $v := . }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- end }}
+```
+
+**ct** (`main.ct`):
+
+```typescript
+import { deployment } from "github.com/cloudticon/k8s@master";
+
+const labels = { app: Release.name };
+
+deployment({
+  name: Release.name,
+  replicas: Values.replicas,
+  selector: { matchLabels: labels },
+  template: {
+    metadata: { labels },
+    spec: {
+      containers: [{
+        name: "web",
+        image: `${Values.image.repository}:${Values.image.tag}`,
+        env: Object.entries(Values.env ?? {}).map(([name, value]) => ({ name, value: String(value) })),
+      }],
+    },
+  },
+});
+```
+
+Helm renders whatever text the template produces, so a mismatched selector, a misindented block or a 16-character port name surfaces when the cluster (or Argo CD) rejects the object. `ct` reports it at render time, with the line in `main.ct` that caused it — see [Validation and errors](#validation-and-errors).
+
+### And the others?
+
+- **Kustomize** patches YAML; it has no loops, functions or values, and it doesn't check objects against the API.
+- **cdk8s** is code too, but it needs Node.js, synthesizes YAML and leaves applying and pruning to other tools. `ct` is one binary that renders, validates and applies.
+- **Pulumi** is general-purpose infrastructure as code with a state backend. `ct` keeps state in the cluster (an inventory ConfigMap per release) and stays a Kubernetes package tool.
+- **Timoni** validates too, but you write CUE. `ct` uses TypeScript, which your team and your coding agent already know.
+
 ## Install
 
 One-line install (Linux/macOS):
@@ -387,6 +455,12 @@ go vet ./...
 go build -ldflags="-s -w" -o ct ./cmd/ct
 ```
 
+## Feedback and contributing
+
+`ct` is young, and real-world charts are the best test it can get. If something doesn't render, validate or apply the way Helm would, [open an issue](https://github.com/cloudticon/ct/issues) with the smallest `main.ct` that shows it. Ideas and questions go to [Discussions](https://github.com/cloudticon/ct/discussions).
+
+If `ct` saved you from one more `nindent`, a ⭐ helps other people find it.
+
 ## License
 
-Apache 2.0
+[Apache 2.0](LICENSE)
