@@ -400,7 +400,9 @@ func writeTarFromRelativePaths(w io.Writer, root string, relPaths []string) (int
 // devices), are skipped: opening a FIFO blocks forever and sockets cannot be
 // archived. Each file is read completely before its header is written, so a
 // file that changes while being archived yields a consistent entry instead
-// of a corrupt archive ("archive/tar: write too long").
+// of a corrupt archive ("archive/tar: write too long"). Files that cannot be
+// read (symlink loops, other users' 0600 files) are skipped with a warning
+// rather than failing the whole sync.
 func writeTar(w io.Writer, root string, relPaths []string) (int, int64, error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -410,25 +412,26 @@ func writeTar(w io.Writer, root string, relPaths []string) (int, int64, error) {
 	tw := tar.NewWriter(w)
 	files := 0
 	var size int64
+	var skipped []string
 	for _, rel := range relPaths {
 		rel = filepath.ToSlash(rel)
 		srcPath := filepath.Join(absRoot, filepath.FromSlash(rel))
 		info, err := os.Stat(srcPath)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
+			if !os.IsNotExist(err) {
+				skipped = append(skipped, err.Error())
 			}
-			return files, size, err
+			continue
 		}
 		if !info.Mode().IsRegular() {
 			continue
 		}
 		data, err := os.ReadFile(srcPath)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
+			if !os.IsNotExist(err) {
+				skipped = append(skipped, err.Error())
 			}
-			return files, size, err
+			continue
 		}
 
 		header, err := tar.FileInfoHeader(info, "")
@@ -445,6 +448,10 @@ func writeTar(w io.Writer, root string, relPaths []string) (int, int64, error) {
 		}
 		files++
 		size += int64(len(data))
+	}
+	if len(skipped) > 0 {
+		log.Printf("%s skipped %d unreadable file(s), e.g. %s (exclude them to silence this)",
+			color.YellowString("[sync]"), len(skipped), skipped[0])
 	}
 	return files, size, tw.Close()
 }
