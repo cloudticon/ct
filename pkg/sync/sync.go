@@ -253,12 +253,14 @@ func (s *Syncer) initialSync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(files) == 0 {
-		return nil
-	}
 
+	// Create the target even when there is nothing to copy yet: later
+	// incremental syncs extract into it.
 	if err := s.ensureRemoteDir(ctx); err != nil {
 		return fmt.Errorf("creating remote directory %s: %w", s.rule.To, err)
+	}
+	if len(files) == 0 {
+		return nil
 	}
 
 	buf := bytes.NewBuffer(nil)

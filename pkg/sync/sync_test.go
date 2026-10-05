@@ -489,3 +489,16 @@ func TestSyncerRun_FailedIncrementalSyncMovesToNewPod(t *testing.T) {
 	cancel()
 	require.NoError(t, <-done)
 }
+
+// With an empty source directory the initial sync returned before creating
+// the target directory, so the first incremental `tar -C /app` failed when
+// the image has no /app.
+func TestSyncerInitialSync_CreatesTargetDirEvenWhenEmpty(t *testing.T) {
+	fake := &fakePodExecutor{}
+	s := NewSyncer(fake, "demo", map[string]string{"app": "x"}, SyncRule{From: t.TempDir(), To: "/app"})
+	s.podName = "pod-1"
+
+	require.NoError(t, s.initialSync(context.Background()))
+	require.Len(t, fake.ExecCalls, 1)
+	assert.Equal(t, []string{"mkdir", "-p", "/app"}, fake.ExecCalls[0].Command)
+}
