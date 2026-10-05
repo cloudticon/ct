@@ -229,13 +229,13 @@ func TestLoadEnvVars_LoadsRelativeFileAndMerges(t *testing.T) {
 	envPath := filepath.Join(dir, ".env.dev")
 	require.NoError(t, os.WriteFile(envPath, []byte("RUNNER_ENV=value\n"), 0o644))
 
-	env, err := loadEnvVars(dir, ".env.dev")
+	env, err := loadEnvVars(dir, ".env.dev", true)
 	require.NoError(t, err)
 	assert.Equal(t, "value", env["RUNNER_ENV"])
 }
 
 func TestLoadEnvVars_MissingFileDoesNotFail(t *testing.T) {
-	env, err := loadEnvVars(t.TempDir(), ".env.missing")
+	env, err := loadEnvVars(t.TempDir(), ".env.missing", false)
 	require.NoError(t, err)
 	assert.NotNil(t, env)
 }
@@ -1210,4 +1210,15 @@ func TestConvertTargets_RejectsDuplicateAndEmptyNames(t *testing.T) {
 	_, err = convertTargets([]engine.RawDevTarget{{Name: " "}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "name")
+}
+
+// A typo in an explicitly given --env-file used to be ignored silently, so
+// env() quietly returned its defaults.
+func TestLoadEnvVars_MissingRequiredFileIsAnError(t *testing.T) {
+	_, err := loadEnvVars(t.TempDir(), ".env.dvelopment", true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ".env.dvelopment")
+
+	_, err = loadEnvVars(t.TempDir(), ".env", false)
+	require.NoError(t, err, "the default .env is optional")
 }

@@ -58,6 +58,7 @@ func runDev(cmd *cobra.Command, opts devOpts) error {
 	if err := runDevMode(ctx, dev.RunOpts{
 		Dir:             dir,
 		EnvFile:         opts.envFile,
+		EnvFileRequired: cmd.Flags().Changed("env-file"),
 		KubeCtx:         opts.context,
 		ReleaseName:     opts.releaseName,
 		Delete:          opts.delete,

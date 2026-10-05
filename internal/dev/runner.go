@@ -45,8 +45,11 @@ func (e *podLostError) Error() string { return e.err.Error() }
 func (e *podLostError) Unwrap() error { return e.err }
 
 type RunOpts struct {
-	Dir             string
-	EnvFile         string
+	Dir     string
+	EnvFile string
+	// EnvFileRequired makes a missing EnvFile an error. Set when the file
+	// was named explicitly; the default .env is optional.
+	EnvFileRequired bool
 	KubeCtx         string
 	ReleaseName     string
 	Delete          bool
@@ -423,7 +426,7 @@ func Run(ctx context.Context, opts RunOpts) error {
 		return err
 	}
 
-	envVars, err := loadEnvVars(normalizedOpts.Dir, normalizedOpts.EnvFile)
+	envVars, err := loadEnvVars(normalizedOpts.Dir, normalizedOpts.EnvFile, normalizedOpts.EnvFileRequired)
 	if err != nil {
 		return err
 	}
@@ -573,7 +576,7 @@ func normalizeRunOpts(opts RunOpts) (RunOpts, error) {
 	return result, nil
 }
 
-func loadEnvVars(dir, envFile string) (map[string]string, error) {
+func loadEnvVars(dir, envFile string, required bool) (map[string]string, error) {
 	if envFile == "" {
 		return engine.MergeEnvWithSystem(nil), nil
 	}
@@ -585,7 +588,7 @@ func loadEnvVars(dir, envFile string) (map[string]string, error) {
 
 	fileEnv, err := engine.LoadEnvFile(envPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && !required {
 			return engine.MergeEnvWithSystem(nil), nil
 		}
 		return nil, fmt.Errorf("loading env file %s: %w", envPath, err)
