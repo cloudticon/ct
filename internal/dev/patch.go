@@ -46,6 +46,57 @@ func ResolveContainers(targets []Target, resources []engine.Resource) error {
 	return nil
 }
 
+// ValidatePatches rejects workload options that PatchResources could not
+// apply, instead of silently ignoring them: options on a target without a
+// (unique) workload of that name in main.ct, and replicas on workloads that
+// have no replica count.
+func ValidatePatches(targets []Target, resources []engine.Resource) error {
+	workloads := indexWorkloads(resources)
+	for _, t := range targets {
+		options := patchOptions(t)
+		if len(options) == 0 {
+			continue
+		}
+		entry, ok := workloads[t.Name]
+		if !ok {
+			return fmt.Errorf("target %q: %s change the workload, but main.ct renders no Deployment/StatefulSet/DaemonSet/ReplicaSet/Job named %q; "+
+				"remove them for workloads ct does not manage, or name the target after the workload",
+				t.Name, strings.Join(options, ", "), t.Name)
+		}
+		if entry.conflict {
+			return fmt.Errorf("target %q: %s cannot be applied: several workloads are named %q", t.Name, strings.Join(options, ", "), t.Name)
+		}
+		kind, _ := entry.resource["kind"].(string)
+		if t.Replicas != nil && (kind == "DaemonSet" || kind == "Job") {
+			return fmt.Errorf("target %q: replicas cannot be set on a %s", t.Name, kind)
+		}
+	}
+	return nil
+}
+
+func patchOptions(t Target) []string {
+	var options []string
+	if t.Image != "" {
+		options = append(options, "image")
+	}
+	if len(t.Command) > 0 {
+		options = append(options, "command")
+	}
+	if t.Replicas != nil {
+		options = append(options, "replicas")
+	}
+	if len(t.Env) > 0 {
+		options = append(options, "env")
+	}
+	if t.WorkingDir != "" {
+		options = append(options, "workingDir")
+	}
+	if t.Probes != nil {
+		options = append(options, "probes")
+	}
+	return options
+}
+
 // PatchResources modifies workload resources based on dev target config.
 // Called between template render and apply.
 // Default: probes are REMOVED unless target.Probes == true.

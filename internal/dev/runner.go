@@ -478,6 +478,9 @@ func Run(ctx context.Context, opts RunOpts) error {
 	if err := ResolveContainers(targets, resources); err != nil {
 		return err
 	}
+	if err := ValidatePatches(targets, resources); err != nil {
+		return err
+	}
 	PatchResources(resources, targets)
 
 	resources = k8s.InjectReleaseLabels(resources, normalizedOpts.ReleaseName)
@@ -658,7 +661,16 @@ func resolveValuesPath(dir string) string {
 func convertTargets(rawTargets []engine.RawDevTarget) ([]Target, error) {
 	targets := make([]Target, 0, len(rawTargets))
 	localPortOwner := map[int]string{}
+	seen := map[string]bool{}
 	for _, raw := range rawTargets {
+		if strings.TrimSpace(raw.Name) == "" {
+			return nil, errors.New("dev(): the target name (first argument) must be a non-empty string")
+		}
+		if seen[raw.Name] {
+			return nil, fmt.Errorf("target %q is defined more than once; merge its dev() calls", raw.Name)
+		}
+		seen[raw.Name] = true
+
 		syncRules, err := parseSyncRules(raw.Name, raw.Sync)
 		if err != nil {
 			return nil, err

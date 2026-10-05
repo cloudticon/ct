@@ -1201,3 +1201,13 @@ func TestStartDevFeatures_LogStreamsShareStdoutSafely(t *testing.T) {
 	assert.Equal(t, 200, strings.Count(out.String(), "api log line\n"))
 	assert.Equal(t, 200, strings.Count(out.String(), "web log line\n"))
 }
+
+func TestConvertTargets_RejectsDuplicateAndEmptyNames(t *testing.T) {
+	_, err := convertTargets([]engine.RawDevTarget{{Name: "web"}, {Name: "web"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"web" is defined more than once`)
+
+	_, err = convertTargets([]engine.RawDevTarget{{Name: " "}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "name")
+}

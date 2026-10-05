@@ -460,3 +460,30 @@ func TestPatchResources_CommandOverrideDropsArgs(t *testing.T) {
 	_, hasArgs := c["args"]
 	assert.False(t, hasArgs, "args of the original command must not be appended to the dev command")
 }
+
+// Workload options on a target that has no workload in main.ct (an external
+// selector, e.g. an operator-managed database) were silently not applied.
+func TestValidatePatches_RejectsPatchesWithoutWorkload(t *testing.T) {
+	resources := []engine.Resource{makeWorkloadResource("web")}
+	err := dev.ValidatePatches([]dev.Target{
+		{Name: "web", Image: "web:dev"},
+		{Name: "postgres", Selector: map[string]string{"cnpg.io/cluster": "pg"}, Image: "postgres:17", Ports: []dev.PortRule{{Local: 5432, Remote: 5432}}},
+	}, resources)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `target "postgres"`)
+	assert.Contains(t, err.Error(), "image")
+	assert.Contains(t, err.Error(), "main.ct")
+
+	require.NoError(t, dev.ValidatePatches([]dev.Target{
+		{Name: "postgres", Selector: map[string]string{"cnpg.io/cluster": "pg"}, Ports: []dev.PortRule{{Local: 5432, Remote: 5432}}},
+	}, resources), "port-forward/sync/terminal-only targets need no workload")
+}
+
+func TestValidatePatches_RejectsReplicasForDaemonSet(t *testing.T) {
+	ds := makeWorkloadResource("agent")
+	ds["kind"] = "DaemonSet"
+	one := 1
+	err := dev.ValidatePatches([]dev.Target{{Name: "agent", Replicas: &one}}, []engine.Resource{ds})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "DaemonSet")
+}
