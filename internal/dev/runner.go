@@ -165,10 +165,11 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 			syncWg.Add(1)
 			startFeature(func(gctx context.Context) error {
 				syncer := ctsync.NewSyncer(cluster, namespace, target.Selector, ctsync.SyncRule{
-					From:    rule.From,
-					To:      rule.To,
-					Exclude: append([]string(nil), rule.Exclude...),
-					Polling: rule.Polling,
+					From:      rule.From,
+					To:        rule.To,
+					Exclude:   append([]string(nil), rule.Exclude...),
+					Polling:   rule.Polling,
+					Container: target.Container,
 				})
 				return syncer.RunWithReady(gctx, syncWg.Done)
 			})
@@ -259,11 +260,12 @@ func runDevSession(ctx context.Context, cluster k8s.Cluster, namespace string, t
 		}
 
 		terminalErr := cluster.Exec(featuresCtx, namespace, target.Selector, k8s.ExecOpts{
-			Command: []string{"/bin/sh", "-c", terminalCommand(target)},
-			Stdin:   os.Stdin,
-			Stdout:  os.Stdout,
-			Stderr:  os.Stderr,
-			TTY:     true,
+			Container: target.Container,
+			Command:   []string{"/bin/sh", "-c", terminalCommand(target)},
+			Stdin:     os.Stdin,
+			Stdout:    os.Stdout,
+			Stderr:    os.Stderr,
+			TTY:       true,
 		})
 		cancel()
 

@@ -226,3 +226,23 @@ func TestSyncerRunWithReady_NilReadyDoesNotPanic(t *testing.T) {
 
 // Compile-time check fakePodExecutor satisfies the port.
 var _ k8s.PodExecutor = (*fakePodExecutor)(nil)
+
+func TestSyncer_ExecsTargetContainer(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "a.txt"), []byte("x"), 0o644))
+
+	fake := &fakePodExecutor{}
+	s := NewSyncer(fake, "demo", map[string]string{"app": "x"}, SyncRule{From: root, To: "/app", Container: "app"})
+	s.podName = "pod-1"
+
+	require.NoError(t, s.initialSync(context.Background()))
+	require.NoError(t, s.incrementalSync(context.Background(), []FileChange{
+		{Path: "a.txt", Type: ChangeModify},
+		{Path: "gone.txt", Type: ChangeDelete},
+	}))
+
+	require.NotEmpty(t, fake.ExecCalls)
+	for _, call := range fake.ExecCalls {
+		assert.Equal(t, "app", call.Container, "exec %v must target the configured container", call.Command)
+	}
+}

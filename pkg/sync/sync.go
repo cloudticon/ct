@@ -23,6 +23,9 @@ type SyncRule struct {
 	To      string
 	Exclude []string
 	Polling bool
+	// Container is the pod container the files are synced into. Empty means
+	// the API server default, which only works for single-container pods.
+	Container string
 }
 
 // Syncer performs initial and incremental sync.
@@ -99,18 +102,20 @@ func (s *Syncer) RunWithReady(ctx context.Context, ready func()) error {
 
 func (s *Syncer) execStream(ctx context.Context, cmd []string, stdin io.Reader) error {
 	return s.exec.ExecPod(ctx, s.namespace, s.podName, k8s.ExecOpts{
-		Command: cmd,
-		Stdin:   stdin,
-		Stdout:  io.Discard,
-		Stderr:  io.Discard,
+		Container: s.rule.Container,
+		Command:   cmd,
+		Stdin:     stdin,
+		Stdout:    io.Discard,
+		Stderr:    io.Discard,
 	})
 }
 
 func (s *Syncer) execSimple(ctx context.Context, cmd []string) error {
 	return s.exec.ExecPod(ctx, s.namespace, s.podName, k8s.ExecOpts{
-		Command: cmd,
-		Stdout:  io.Discard,
-		Stderr:  io.Discard,
+		Container: s.rule.Container,
+		Command:   cmd,
+		Stdout:    io.Discard,
+		Stderr:    io.Discard,
 	})
 }
 

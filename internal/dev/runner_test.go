@@ -692,3 +692,38 @@ func TestRunDevSession_CancelCascadesToAllFeatures(t *testing.T) {
 	}
 	assert.Equal(t, 0, fake.ActiveOps(), "no goroutines should remain active after cancel")
 }
+
+// Pods with an injected sidecar (Istio, Linkerd, ...) have several
+// containers; the API server rejects exec without a container name there, so
+// sync and the terminal must address the target's container explicitly.
+func TestStartDevFeatures_TerminalAndSyncUseTargetContainer(t *testing.T) {
+	silenceDevLog(t)
+
+	fake := k8stest.NewFake()
+	fake.AddPod(&k8stest.FakePod{
+		Name: "web-x", Namespace: "ns",
+		Labels: k8s.Selector{"app": "web"}, Healthy: true,
+		Containers: []string{"app", "istio-proxy"},
+	})
+	fake.ExecHook = func(ns, pod string, opts k8s.ExecOpts) error { return nil }
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "main.go"), []byte("package main"), 0o644))
+
+	targets := []Target{{
+		Name: "web", Selector: map[string]string{"app": "web"},
+		Container: "app",
+		Sync:      []SyncRule{{From: src, To: "/app"}},
+		Terminal:  "bash",
+	}}
+
+	require.NoError(t, startDevFeatures(context.Background(), fake, "ns", targets, &bytes.Buffer{}))
+
+	var commands []string
+	for _, call := range fake.ExecCalls {
+		commands = append(commands, call.Opts.Command[0])
+		assert.Equal(t, "app", call.Opts.Container, "exec %v must target the dev container", call.Opts.Command)
+	}
+	assert.Contains(t, commands, "tar", "initial sync should have run")
+	assert.Contains(t, commands, "/bin/sh", "terminal should have run")
+}
