@@ -34,7 +34,7 @@ func newApplyCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "target namespace for resources")
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: yaml or json (default: no output)")
 	addRenderFlags(cmd, &opts.templateOpts)
-	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "skip cache, re-download remote source")
+	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "re-download the remote source and imported packages instead of using ~/.ct/cache")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
 	cmd.Flags().BoolVar(&opts.createNamespace, "create-namespace", false, "create namespace if it does not exist")
 

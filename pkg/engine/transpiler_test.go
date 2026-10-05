@@ -406,3 +406,23 @@ func TestBundle_RelativeEntryPointAndProjectDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, js, "relative-ok")
 }
+
+func TestBundle_RefreshPackagesInvalidatesCacheOncePerBundle(t *testing.T) {
+	// invalid.invalid never resolves, so the re-download fails fast offline.
+	pkgDir := setupFakeCache(t, "invalid.invalid", "someone", "fresh", "main")
+	writeTS(t, pkgDir, "index.ts", `export const v = "stale";`)
+
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { v } from "invalid.invalid/someone/fresh@main"; console.log(v);`), 0o644))
+
+	tr := engine.NewTranspiler(dir)
+	js, err := tr.Bundle(entry)
+	require.NoError(t, err)
+	assert.Contains(t, js, "stale", "cache is trusted by default")
+
+	tr.RefreshPackages = true
+	_, err = tr.Bundle(entry)
+	require.Error(t, err, "the stale copy is dropped and a re-download is attempted")
+	assert.NoDirExists(t, pkgDir)
+}

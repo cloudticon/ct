@@ -44,7 +44,7 @@ func newTemplateCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "default namespace for resources")
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "yaml", "output format: yaml or json")
 	addRenderFlags(cmd, &opts)
-	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "skip cache, re-download remote source")
+	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "re-download the remote source and imported packages instead of using ~/.ct/cache")
 
 	return cmd
 }
@@ -96,6 +96,7 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 		return nil, fmt.Errorf("resolving project directory: %w", err)
 	}
 	tr := engine.NewTranspiler(absDir)
+	tr.RefreshPackages = opts.noCache
 
 	values, err := engine.LoadValues(engine.ValuesOpts{
 		Files:     resolveValuesFiles(dir, opts.valuesFiles),

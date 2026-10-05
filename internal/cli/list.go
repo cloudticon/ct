@@ -35,7 +35,7 @@ func newListCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "namespace to search")
 	cmd.Flags().BoolVarP(&opts.allNamespaces, "all-namespaces", "A", false, "list releases across all namespaces")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
-	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: json or yaml (default: table)")
+	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: table, json or yaml")
 
 	return cmd
 }
@@ -56,7 +56,7 @@ func runList(cmd *cobra.Command, opts listOpts) error {
 	}
 
 	switch strings.ToLower(opts.outputFmt) {
-	case "":
+	case "", "table":
 		return writeReleaseTable(cmd.OutOrStdout(), releases)
 	case "json":
 		return writeReleaseJSON(cmd.OutOrStdout(), releases)

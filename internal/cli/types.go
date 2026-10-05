@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/cloudticon/ct/internal/dev"
@@ -117,7 +118,7 @@ func resolveURLImports(entryPath string) error {
 	}
 
 	for _, imp := range imports {
-		rawURL, ok := importToURL(imp.Path)
+		rawURL, ok := packages.ImportURL(imp.Path)
 		if !ok {
 			continue
 		}
@@ -126,22 +127,6 @@ func resolveURLImports(entryPath string) error {
 		}
 	}
 	return nil
-}
-
-func importToURL(importPath string) (string, bool) {
-	if packages.IsURLImport(importPath) {
-		return importPath, true
-	}
-	if !packages.IsGitPackage(importPath) {
-		return "", false
-	}
-	pkgWithVersion, _ := packages.SplitPackagePath(importPath)
-	pkg, version := packages.SplitPackageVersion(pkgWithVersion)
-	url := "https://" + pkg
-	if version != "" {
-		url += "@" + version
-	}
-	return url, true
 }
 
 func projectHash(absPath string) string {
@@ -162,8 +147,17 @@ func generateValuesDts(values map[string]interface{}) string {
 
 func writeObjectFields(buf *strings.Builder, obj map[string]interface{}, indent string) {
 	for _, k := range sortedKeys(obj) {
-		fmt.Fprintf(buf, "%s%s: %s;\n", indent, k, inferTSType(obj[k], indent))
+		fmt.Fprintf(buf, "%s%s: %s;\n", indent, tsPropertyName(k), inferTSType(obj[k], indent))
 	}
+}
+
+// tsPropertyName quotes keys that aren't identifiers, e.g. annotation keys
+// like "nginx.ingress.kubernetes.io/rewrite-target".
+func tsPropertyName(key string) string {
+	if engine.IsValidJSIdentifier(key) {
+		return key
+	}
+	return strconv.Quote(key)
 }
 
 func inferTSType(v interface{}, indent string) string {

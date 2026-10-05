@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/cloudticon/ct/pkg/cache"
 	"github.com/cloudticon/ct/pkg/diag"
@@ -13,6 +14,10 @@ import (
 
 type Transpiler struct {
 	projectDir string
+	// RefreshPackages re-downloads every imported package once per Bundle
+	// instead of trusting the cache; branch versions like @master otherwise
+	// stay at whatever was fetched first.
+	RefreshPackages bool
 }
 
 func NewTranspiler(projectDir string) *Transpiler {
@@ -51,7 +56,7 @@ func (t *Transpiler) Bundle(entryPoint string) (string, error) {
 			".ts": api.LoaderTS,
 			".ct": api.LoaderTS,
 		},
-		Plugins: []api.Plugin{asyncDetectPlugin(), urlResolverPlugin()},
+		Plugins: []api.Plugin{asyncDetectPlugin(), t.urlResolverPlugin()},
 	})
 
 	if len(result.Errors) > 0 {
@@ -111,13 +116,30 @@ func asyncDetectPlugin() api.Plugin {
 	}
 }
 
-func urlResolverPlugin() api.Plugin {
+func (t *Transpiler) urlResolverPlugin() api.Plugin {
+	refreshed := map[string]bool{}
+	var mu sync.Mutex
+	resolve := func(url string) (string, error) {
+		if t.RefreshPackages {
+			mu.Lock()
+			first := !refreshed[url]
+			refreshed[url] = true
+			mu.Unlock()
+			if first {
+				if err := cache.Invalidate(url); err != nil {
+					return "", err
+				}
+			}
+		}
+		return cache.Resolve(url)
+	}
+
 	return api.Plugin{
 		Name: "url-resolver",
 		Setup: func(build api.PluginBuild) {
 			build.OnResolve(api.OnResolveOptions{Filter: `^https://`},
 				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
-					pkgDir, err := cache.Resolve(args.Path)
+					pkgDir, err := resolve(args.Path)
 					if err != nil {
 						return api.OnResolveResult{}, err
 					}
@@ -128,19 +150,13 @@ func urlResolverPlugin() api.Plugin {
 
 			build.OnResolve(api.OnResolveOptions{Filter: `^[a-zA-Z0-9]`},
 				func(args api.OnResolveArgs) (api.OnResolveResult, error) {
-					if !packages.IsGitPackage(args.Path) {
+					url, ok := packages.ImportURL(args.Path)
+					if !ok {
 						return api.OnResolveResult{}, nil
 					}
+					_, subPath := packages.SplitPackagePath(args.Path)
 
-					pkgWithVersion, subPath := packages.SplitPackagePath(args.Path)
-					pkg, version := packages.SplitPackageVersion(pkgWithVersion)
-
-					url := "https://" + pkg
-					if version != "" {
-						url += "@" + version
-					}
-
-					pkgDir, err := cache.Resolve(url)
+					pkgDir, err := resolve(url)
 					if err != nil {
 						return api.OnResolveResult{}, err
 					}

@@ -5,6 +5,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/cloudticon/ct/pkg/cache"
 )
 
 func IsURLImport(importPath string) bool {
@@ -48,6 +50,14 @@ func IsGitPackage(importPath string) bool {
 func SplitPackagePath(importPath string) (pkgName, subPath string) {
 	parts := strings.Split(importPath, "/")
 	n := packageSegmentCount(parts[0])
+	// A version marks where the package ends, which also covers hosts with
+	// nested groups: "git.example.com/group/team/repo@v1/lib".
+	for i := 1; i < len(parts); i++ {
+		if strings.Contains(parts[i], "@") {
+			n = i + 1
+			break
+		}
+	}
 	if len(parts) <= n {
 		return importPath, ""
 	}
@@ -59,16 +69,32 @@ func SplitPackageVersion(pkgName string) (pkg, version string) {
 	return
 }
 
+// ImportURL maps an import path to the package URL the cache understands:
+// "github.com/o/r@v1/sub" and "https://github.com/o/r@v1" both become
+// "https://github.com/o/r@v1". Relative and bare imports return false.
+func ImportURL(importPath string) (string, bool) {
+	if IsURLImport(importPath) {
+		return importPath, true
+	}
+	if !IsGitPackage(importPath) {
+		return "", false
+	}
+	pkgWithVersion, _ := SplitPackagePath(importPath)
+	pkg, version := SplitPackageVersion(pkgWithVersion)
+	url := "https://" + pkg
+	if version != "" {
+		url += "@" + version
+	}
+	return url, true
+}
+
 func PackageToGitURL(pkgName string) string {
 	return "https://" + pkgName + ".git"
 }
 
 func packageSegmentCount(domain string) int {
-	wellKnown := [...]string{"github.com", "gitlab.com", "bitbucket.org"}
-	for _, h := range wellKnown {
-		if domain == h {
-			return 3
-		}
+	if cache.IsWellKnownHost(domain) {
+		return 3
 	}
 	return 2
 }
