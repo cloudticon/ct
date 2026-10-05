@@ -56,13 +56,13 @@ func TestClean_KeepsEmptyObjectsInsideArrays(t *testing.T) {
 	assert.Equal(t, []interface{}{map[string]interface{}{}}, res["spec"].(map[string]interface{})["ingress"])
 }
 
-func TestClean_DropsNullsAndWhatTheyEmptied(t *testing.T) {
+func TestClean_DropsOnlyNullsLikeJSONStringify(t *testing.T) {
 	res := manifest.Resource{
 		"metadata": map[string]interface{}{"name": "x", "labels": nil},
 		"spec": map[string]interface{}{
 			"selector": map[string]interface{}{"app": nil},
-			"args":     []interface{}{nil},
-			"env":      []interface{}{map[string]interface{}{"value": nil}},
+			"args":     []interface{}{nil, "a"},
+			"egress":   []interface{}{map[string]interface{}{"to": nil}},
 			"ports":    []interface{}{},
 			"replicas": int64(0),
 			"paused":   false,
@@ -74,6 +74,12 @@ func TestClean_DropsNullsAndWhatTheyEmptied(t *testing.T) {
 
 	assert.Equal(t, map[string]interface{}{"name": "x"}, res["metadata"])
 	assert.Equal(t, map[string]interface{}{
+		"selector": map[string]interface{}{},
+		"args":     []interface{}{"a"},
+		// JSON.stringify keeps {} for { to: undefined }: allow-all egress
+		// must not turn into deny-all.
+		"egress":   []interface{}{map[string]interface{}{}},
+		"ports":    []interface{}{},
 		"replicas": int64(0),
 		"paused":   false,
 		"name":     "",

@@ -17,42 +17,37 @@ type Resource = map[string]interface{}
 // (`__ctts_scope: "cluster"`). It is stripped before output.
 const ScopeMarker = "__ctts_scope"
 
-// Clean removes null/undefined values in place. Objects and arrays that end
-// up empty only because their null members were removed are dropped too, as
-// are empty arrays (the Kubernetes API treats an empty list like a missing
-// one). Objects written as {} are kept: `emptyDir: {}` or `podSelector: {}`
-// mean something different from a missing field.
+// Clean removes null and undefined values in place, the way JSON.stringify
+// drops undefined: keys holding null/undefined go away, and so do null items
+// in arrays. Everything else stays as written, including empty objects and
+// arrays, because they can carry meaning: `emptyDir: {}`, a NetworkPolicy
+// `ingress: [{}]` (allow all), `egress: [{ to: undefined }]`, a PDB
+// `selector: {}`, a CRD `default: []`.
 func Clean(obj map[string]interface{}) {
 	for k, v := range obj {
-		cleaned, keep := cleanValue(v)
-		if !keep {
+		if v == nil {
 			delete(obj, k)
 			continue
 		}
-		obj[k] = cleaned
+		obj[k] = cleanValue(v)
 	}
 }
 
-func cleanValue(v interface{}) (interface{}, bool) {
+func cleanValue(v interface{}) interface{} {
 	switch val := v.(type) {
-	case nil:
-		return nil, false
 	case map[string]interface{}:
-		if len(val) == 0 {
-			return val, true
-		}
 		Clean(val)
-		return val, len(val) > 0
+		return val
 	case []interface{}:
 		cleaned := make([]interface{}, 0, len(val))
 		for _, item := range val {
-			if cv, keep := cleanValue(item); keep {
-				cleaned = append(cleaned, cv)
+			if item != nil {
+				cleaned = append(cleaned, cleanValue(item))
 			}
 		}
-		return cleaned, len(cleaned) > 0
+		return cleaned
 	default:
-		return v, true
+		return v
 	}
 }
 

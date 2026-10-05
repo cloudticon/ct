@@ -248,7 +248,8 @@ __ct_resources.push({
 	require.NoError(t, err)
 
 	assert.Contains(t, stdout, "emptyDir: {}")
-	assert.NotContains(t, stdout, "args")
+	assert.Contains(t, stdout, "args: []", "empty arrays stay as written")
+	assert.NotContains(t, stdout, "labels: null")
 }
 
 func TestTemplateE2E_ClusterScopedKindsGetNoNamespace(t *testing.T) {

@@ -183,7 +183,7 @@ func TestSerialize_CleansNilInArrays(t *testing.T) {
 	assert.NotContains(t, result, "command")
 }
 
-func TestSerialize_RemovesEmptyMapsAfterCleaning(t *testing.T) {
+func TestSerialize_KeepsObjectsEmptiedByNullRemoval(t *testing.T) {
 	resources := []output.Resource{
 		{
 			"apiVersion": "v1",
@@ -202,8 +202,8 @@ func TestSerialize_RemovesEmptyMapsAfterCleaning(t *testing.T) {
 	result, err := output.Serialize(resources, "yaml")
 
 	require.NoError(t, err)
-	assert.NotContains(t, result, "selector")
-	assert.NotContains(t, result, "spec")
+	assert.Contains(t, result, "selector: {}")
+	assert.NotContains(t, result, "removed")
 }
 
 func TestSerialize_EmptyResourceList(t *testing.T) {
@@ -256,7 +256,7 @@ func TestSerialize_KeepsAuthoredEmptyObjects(t *testing.T) {
 }
 
 func TestSerialize_EmptyResourceDoesNotPanic(t *testing.T) {
-	result, err := output.Serialize([]output.Resource{{"metadata": map[string]interface{}{"labels": nil}}}, "yaml")
+	result, err := output.Serialize([]output.Resource{{"labels": nil}}, "yaml")
 
 	require.NoError(t, err)
 	assert.Equal(t, "{}\n", result)
