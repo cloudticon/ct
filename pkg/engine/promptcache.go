@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -28,32 +29,23 @@ func NewPromptCache(projectDir string) (*PromptCache, error) {
 		return nil, fmt.Errorf("getting home dir: %w", err)
 	}
 
+	// Answers may be secrets: keep the cache private to the user.
 	cacheDir := filepath.Join(homeDir, ".ct", "prompt_cache")
-	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating cache dir: %w", err)
 	}
 
-	cachePath := filepath.Join(cacheDir, hexHash+".json")
-	c := &PromptCache{
-		path: cachePath,
-		data: make(map[string]string),
-	}
-
-	if raw, err := os.ReadFile(cachePath); err == nil {
-		_ = json.Unmarshal(raw, &c.data)
-	}
-
-	return c, nil
+	return NewPromptCacheFromPath(filepath.Join(cacheDir, hexHash+".json")), nil
 }
 
 // NewPromptCacheFromPath creates a cache using an explicit file path (for testing).
 func NewPromptCacheFromPath(cachePath string) *PromptCache {
-	c := &PromptCache{
-		path: cachePath,
-		data: make(map[string]string),
-	}
+	c := &PromptCache{path: cachePath}
 	if raw, err := os.ReadFile(cachePath); err == nil {
 		_ = json.Unmarshal(raw, &c.data)
+	}
+	if c.data == nil { // missing, corrupt or "null" file
+		c.data = make(map[string]string)
 	}
 	return c
 }
@@ -70,20 +62,37 @@ func (c *PromptCache) Set(question, answer string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.path, raw, 0o644)
+	if err := os.WriteFile(c.path, raw, 0o600); err != nil {
+		return err
+	}
+	// WriteFile keeps the mode of an existing file; tighten older caches.
+	return os.Chmod(c.path, 0o600)
 }
 
 // MakePromptFn returns a prompt function that reads stdin with cache support.
 func MakePromptFn(cache *PromptCache, reader io.Reader, writer io.Writer) func(string) (string, error) {
+	// One buffered reader for all prompts: a reader per prompt reads ahead
+	// and swallows the answers to the following prompts when stdin is piped.
+	in := bufio.NewReader(reader)
 	return func(question string) (string, error) {
 		if cached, ok := cache.Get(question); ok {
-			fmt.Fprintf(writer, "%s [cached: %s]\n", question, cached)
+			fmt.Fprintf(writer, "%s [cached: %s] (change it in %s)\n", question, cached, cache.path)
 			return cached, nil
 		}
 		fmt.Fprintf(writer, "%s: ", question)
-		scanner := bufio.NewScanner(reader)
-		scanner.Scan()
-		answer := strings.TrimSpace(scanner.Text())
+		line, err := in.ReadString('\n')
+		if err != nil && (line == "" || !errors.Is(err, io.EOF)) {
+			if errors.Is(err, io.EOF) {
+				// Do not cache anything: an empty answer would be reused
+				// silently by every later run.
+				key, _ := json.Marshal(question)
+				return "", fmt.Errorf("no answer for prompt %q: stdin is closed or not a terminal; "+
+					"run ct dev interactively, pipe the answers to stdin, or add %s: \"<answer>\" to the JSON object in %s",
+					question, key, cache.path)
+			}
+			return "", fmt.Errorf("reading answer for prompt %q: %w", question, err)
+		}
+		answer := strings.TrimSpace(line)
 		if err := cache.Set(question, answer); err != nil {
 			return "", fmt.Errorf("saving prompt cache: %w", err)
 		}
