@@ -226,6 +226,21 @@ func TestListReleases_Namespace(t *testing.T) {
 	}, metav1.CreateOptions{})
 	require.NoError(t, err)
 
+	// A ConfigMap the release itself renders carries the same labels as the
+	// inventory but is not one.
+	_, err = client.CoreV1.ConfigMaps("prod").Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "app-config",
+			Namespace: "prod",
+			Labels: map[string]string{
+				managedByLabelKey: "ct",
+				instanceLabelKey:  "my-release",
+			},
+		},
+		Data: map[string]string{"LOG_LEVEL": "info"},
+	}, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	releases, err := listReleases(ctx, client, "prod", false)
 	require.NoError(t, err)
 	assert.Equal(t, []ReleaseInfo{

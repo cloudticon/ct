@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 
 	"github.com/fatih/color"
 
@@ -257,8 +258,10 @@ func listReleases(ctx context.Context, c *client, namespace string, allNamespace
 
 	releases := make([]ReleaseInfo, 0, len(cmList.Items))
 	for _, cm := range cmList.Items {
+		// ConfigMaps a release renders carry the same labels as its
+		// inventory; only ct-inventory-* ones are inventories.
 		releaseName := cm.Labels[instanceLabelKey]
-		if releaseName == "" {
+		if releaseName == "" || !strings.HasPrefix(cm.Name, inventoryCMPrefix) {
 			continue
 		}
 
