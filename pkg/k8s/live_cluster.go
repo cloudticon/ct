@@ -122,7 +122,7 @@ func (lc *liveCluster) execPodOn(ctx context.Context, c *client, pod string, opt
 	}
 
 	streamOpts := execStreamOpts{
-		Container:         opts.Container,
+		Container:         resolveContainer(ctx, c, pod, opts.Container),
 		Stdin:             opts.Stdin,
 		Stdout:            opts.Stdout,
 		Stderr:            opts.Stderr,

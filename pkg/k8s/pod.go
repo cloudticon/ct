@@ -125,6 +125,43 @@ func firstRunningPodName(pods []corev1.Pod) (name, problem string) {
 	return name, problem
 }
 
+// defaultContainerAnnotation names the container kubectl uses when a command
+// does not specify one. ct dev sets it on patched workloads; service meshes
+// set it when they inject a sidecar.
+const defaultContainerAnnotation = "kubectl.kubernetes.io/default-container"
+
+// resolveContainer returns container when it is set. Otherwise it returns
+// the pod's default container the way kubectl resolves it, because the API
+// server rejects exec and log requests without a container name for pods
+// with more than one container (e.g. an injected sidecar). It returns "" when
+// the pod cannot be read, leaving the choice to the API server.
+func resolveContainer(ctx context.Context, c *client, podName, container string) string {
+	if container != "" || c == nil || c.CoreV1 == nil {
+		return container
+	}
+	pod, err := c.CoreV1.Pods(c.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	return defaultContainerName(pod)
+}
+
+// defaultContainerName returns the container named by the default-container
+// annotation when it exists in the pod, else the first container.
+func defaultContainerName(pod *corev1.Pod) string {
+	if name := pod.Annotations[defaultContainerAnnotation]; name != "" {
+		for _, c := range pod.Spec.Containers {
+			if c.Name == name {
+				return name
+			}
+		}
+	}
+	if len(pod.Spec.Containers) > 0 {
+		return pod.Spec.Containers[0].Name
+	}
+	return ""
+}
+
 func logContainerProblem(ctx context.Context, c *client, podName, problem string) {
 	waitLog.Printf("%s pod %q: %s, fetching crash logs...", color.YellowString("[wait]"), podName, problem)
 	if logs := fetchPreviousLogsFn(ctx, c, podName); logs != "" {
@@ -136,6 +173,7 @@ func logContainerProblem(ctx context.Context, c *client, podName, problem string
 func fetchPreviousLogs(ctx context.Context, c *client, podName string) string {
 	tailLines := int64(20)
 	req := c.CoreV1.Pods(c.Namespace).GetLogs(podName, &corev1.PodLogOptions{
+		Container: resolveContainer(ctx, c, podName, ""),
 		Previous:  true,
 		TailLines: &tailLines,
 	})

@@ -84,7 +84,8 @@ func streamPodLogs(ctx context.Context, c *client, pod string) (io.ReadCloser, e
 	}
 
 	req := c.CoreV1.Pods(c.Namespace).GetLogs(pod, &corev1.PodLogOptions{
-		Follow: true,
+		Container: resolveContainer(ctx, c, pod, ""),
+		Follow:    true,
 	})
 	stream, err := req.Stream(ctx)
 	if err != nil {
