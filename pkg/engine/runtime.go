@@ -55,6 +55,8 @@ func Execute(opts ExecuteOpts) ([]Resource, error) {
 
 // Render runs a bundle and returns the registered resources together with
 // their source origins. Errors are diag.List values with .ct positions.
+// A duplicate-resource error comes with a non-nil Result so that the caller
+// can still validate the objects; every other error returns a nil Result.
 func Render(opts ExecuteOpts) (*Result, error) {
 	vm := goja.New()
 	// Endless recursion fails fast with a RangeError and a short stack
@@ -88,7 +90,9 @@ func Render(opts ExecuteOpts) (*Result, error) {
 
 	manifest.Normalize(resources, opts.Namespace)
 	if err := checkDuplicates(result); err != nil {
-		return nil, err
+		// The result is returned alongside the error so callers can run
+		// further checks and report every problem in one pass.
+		return result, err
 	}
 	return result, nil
 }

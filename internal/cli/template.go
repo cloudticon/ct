@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -126,13 +127,19 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 		SourceDir:   absDir,
 		Timeout:     renderTimeout,
 	})
+	var problems diag.List
 	if err != nil {
-		return nil, err
+		var dups diag.List
+		if result == nil || !errors.As(err, &dups) {
+			return nil, err
+		}
+		problems = append(problems, dups...)
 	}
 	if opts.validate {
-		if problems := validate.Resources(result.Resources, result.Origin); len(problems) > 0 {
-			return nil, problems
-		}
+		problems = append(problems, validate.Resources(result.Resources, result.Origin)...)
+	}
+	if len(problems) > 0 {
+		return nil, problems
 	}
 	resources := result.Resources
 	manifest.SortForApply(resources)

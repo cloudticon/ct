@@ -293,6 +293,38 @@ for (const i of [1, 2]) {
 	assert.Contains(t, list[0].Message, "registered 2 times")
 }
 
+func TestTemplateE2E_DuplicateDoesNotHideValidationErrors(t *testing.T) {
+	dir := writeProject(t, `
+for (const i of [1, 2]) {
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "a" } });
+}
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: "web" },
+  spec: {
+    selector: { matchLabels: { app: "web" } },
+    template: {
+      metadata: { labels: { app: "web" } },
+      spec: { containers: [{ name: "web", imagee: "nginx" }] },
+    },
+  },
+});
+`, nil)
+
+	_, _, err := runTemplateE2E(t, "demo", dir, "-n", "prod")
+	require.Error(t, err)
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	codes := map[string]bool{}
+	for _, d := range list {
+		codes[d.Code] = true
+	}
+	assert.True(t, codes[diag.CodeDuplicate], "duplicate reported: %v", list)
+	assert.Greater(t, len(codes), 1, "validation errors reported next to the duplicate: %v", list)
+	assert.Contains(t, string(diag.JSON(list)), diag.CodeDuplicate)
+}
+
 func TestTemplateE2E_YAMLUsesTwoSpaceIndent(t *testing.T) {
 	dir := writeProject(t, `
 __ct_resources.push({
