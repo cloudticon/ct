@@ -1,0 +1,13 @@
+{
+  "errors": [
+    {
+      "code": "import",
+      "message": "Could not resolve \"lodash\"",
+      "file": "main.ct",
+      "line": 1,
+      "column": 23,
+      "lineText": "import { chunk } from \"lodash\";",
+      "hint": "ct doesn't use npm; import packages by URL, e.g. github.com/cloudticon/k8s@master"
+    }
+  ]
+}

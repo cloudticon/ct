@@ -1,0 +1,6 @@
+export function make(opts: { name: string }) {
+  if (!opts.name) {
+    throw new Error("name is required");
+  }
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: opts.name } });
+}

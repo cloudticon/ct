@@ -1,0 +1,13 @@
+{
+  "errors": [
+    {
+      "code": "async-not-supported",
+      "message": "async/await is not supported: .ct code runs synchronously",
+      "file": "main.ct",
+      "line": 1,
+      "column": 14,
+      "lineText": "const data = await Promise.resolve(\"x\");",
+      "hint": "rendering is synchronous; call functions directly and drop async/await"
+    }
+  ]
+}

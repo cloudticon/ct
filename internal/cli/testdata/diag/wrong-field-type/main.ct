@@ -1,0 +1,13 @@
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: "web" },
+  spec: {
+    replicas: "three",
+    selector: { matchLabels: { app: "web" } },
+    template: {
+      metadata: { labels: { app: "web" } },
+      spec: { containers: [{ name: "web", image: "nginx" }] },
+    },
+  },
+});

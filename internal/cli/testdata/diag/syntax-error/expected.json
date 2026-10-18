@@ -1,0 +1,12 @@
+{
+  "errors": [
+    {
+      "code": "syntax",
+      "message": "Expected \";\" but found \"is\"",
+      "file": "main.ct",
+      "line": 2,
+      "column": 6,
+      "lineText": "this is not valid javascript {{{"
+    }
+  ]
+}

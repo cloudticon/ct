@@ -116,6 +116,12 @@ cd ct
 go build -ldflags="-s -w" -o ct ./cmd/ct
 ```
 
+Error codes and messages are a contract for AI agents, so they have golden tests: each directory in `internal/cli/testdata/diag/` is a broken project plus the `expected.json` that `ct --error-format json` must print for it. After an intended change to a diagnostic, refresh the expected files and review the diff:
+
+```bash
+go test ./internal/cli -run TestDiagnosticsGolden -update
+```
+
 ## Quick start
 
 ```bash

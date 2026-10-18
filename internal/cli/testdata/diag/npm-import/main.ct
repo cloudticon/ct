@@ -1,0 +1,3 @@
+import { chunk } from "lodash";
+
+__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cm" }, data: { n: String(chunk([1, 2], 1).length) } });

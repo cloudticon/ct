@@ -1,0 +1,24 @@
+{
+  "errors": [
+    {
+      "code": "runtime",
+      "message": "Error: name is required",
+      "file": "lib/factory.ct",
+      "line": 3,
+      "column": 10,
+      "stack": [
+        {
+          "file": "lib/factory.ct",
+          "line": 3,
+          "column": 10,
+          "function": "make"
+        },
+        {
+          "file": "main.ct",
+          "line": 4,
+          "column": 5
+        }
+      ]
+    }
+  ]
+}

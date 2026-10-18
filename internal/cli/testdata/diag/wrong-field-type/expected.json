@@ -1,0 +1,13 @@
+{
+  "errors": [
+    {
+      "code": "invalid-value",
+      "message": "Invalid value: expected an integer, got string",
+      "file": "main.ct",
+      "line": 1,
+      "column": 20,
+      "resource": "Deployment \"web\"",
+      "path": "spec.replicas"
+    }
+  ]
+}

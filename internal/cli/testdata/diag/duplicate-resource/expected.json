@@ -1,0 +1,13 @@
+{
+  "errors": [
+    {
+      "code": "duplicate-resource",
+      "message": "registered 2 times (main.ct:1:20; main.ct:2:20)",
+      "file": "main.ct",
+      "line": 2,
+      "column": 20,
+      "resource": "ConfigMap \"cm\"",
+      "hint": "each object must be registered once; give the copies different names or namespaces, or register it in one place"
+    }
+  ]
+}

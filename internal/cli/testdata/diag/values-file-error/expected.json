@@ -1,0 +1,8 @@
+{
+  "errors": [
+    {
+      "code": "error",
+      "message": "parsing YAML values from testdata/diag/values-file-error/values.yaml: yaml: line 1: did not find expected ',' or ']'"
+    }
+  ]
+}

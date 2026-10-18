@@ -1,0 +1,1 @@
+__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cm" } });

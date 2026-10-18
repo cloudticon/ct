@@ -1,0 +1,13 @@
+{
+  "errors": [
+    {
+      "code": "invalid-value",
+      "message": "Invalid value: {\"app\":\"api\"}: `selector` does not match template `labels`",
+      "file": "main.ct",
+      "line": 1,
+      "column": 20,
+      "resource": "Deployment \"web\"",
+      "path": "spec.template.metadata.labels"
+    }
+  ]
+}
