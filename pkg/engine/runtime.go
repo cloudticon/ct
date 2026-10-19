@@ -264,7 +264,10 @@ func runtimeDiagnostics(err error, sourceDir string) error {
 			Message: exceptionMessage(ex),
 			Stack:   capFrames(frames),
 		}
-		if strings.Contains(d.Message, "of undefined") || strings.Contains(d.Message, "of null") {
+		if code, path, hint, msg, ok := thrownDiagnostic(ex); ok {
+			d.Code, d.Path, d.Message = code, path, msg
+			d.Hint = hint
+		} else if strings.Contains(d.Message, "of undefined") || strings.Contains(d.Message, "of null") {
 			d.Hint = "something on that line is undefined; missing Values keys are a common cause: add them to values.json/values.yaml or pass --set, and use ?. for optional ones"
 		}
 		return diag.List{d.At(userFrame(frames))}
@@ -279,6 +282,41 @@ func userFrame(frames []diag.Frame) *diag.Frame {
 		return &chain[0]
 	}
 	return nil
+}
+
+// thrownDiagnostic reads the package error convention: a thrown object with a
+// string `code`, and optionally a string `path` (the offending field) and
+// `hint`, becomes a diagnostic with that code, path and hint. The position is
+// chosen by the caller (the first frame outside imported packages).
+func thrownDiagnostic(ex *goja.Exception) (code, path, hint, msg string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	obj, isObj := ex.Value().(*goja.Object)
+	if !isObj {
+		return
+	}
+	str := func(name string) string {
+		v := obj.Get(name)
+		if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+			return ""
+		}
+		if s, isStr := v.Export().(string); isStr {
+			return s
+		}
+		return ""
+	}
+	code = str("code")
+	if code == "" {
+		return
+	}
+	msg = str("message")
+	if msg == "" {
+		msg = exceptionMessage(ex)
+	}
+	return code, str("path"), str("hint"), msg, true
 }
 
 func exceptionMessage(ex *goja.Exception) (msg string) {

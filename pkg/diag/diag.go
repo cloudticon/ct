@@ -26,6 +26,9 @@ const (
 	CodeInvalidValue      = "invalid-value"
 	CodeMissingField      = "missing-field"
 	CodeNamespaceNotFound = "namespace-not-found"
+	// CodeInvalidInput is what packages use (by convention, see README) to
+	// reject the input of a factory call.
+	CodeInvalidInput = "invalid-input"
 )
 
 // Frame is a position in a .ct/.ts source file.

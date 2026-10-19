@@ -3,6 +3,7 @@ package engine_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cloudticon/ct/pkg/diag"
@@ -497,4 +498,64 @@ func TestBundle_RefreshKeepsPackagesMarkedFresh(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, js, "from-self")
 	assert.DirExists(t, pkgDir)
+}
+
+func renderWithPackage(t *testing.T, pkgSrc string) error {
+	t.Helper()
+	pkgDir := setupFakeCache(t, "github.com", "acme", "infra", "v1")
+	writeTS(t, pkgDir, "lib/web.ts", pkgSrc)
+
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { webApp } from "github.com/acme/infra@v1/lib/web";
+
+webApp({ replcas: 3 });
+`), 0o644))
+
+	js, err := engine.NewTranspiler(dir).Bundle(entry)
+	require.NoError(t, err)
+	_, err = engine.Render(engine.ExecuteOpts{JSCode: js, SourceDir: dir})
+	return err
+}
+
+func TestRender_PackageInputErrorPointsAtProjectCall(t *testing.T) {
+	err := renderWithPackage(t, `
+export function webApp(opts: any) {
+  throw Object.assign(new Error("unknown option"), {
+    code: "invalid-input", path: "replcas", hint: "did you mean replicas?",
+  });
+}
+`)
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 1)
+	d := list[0]
+	assert.Equal(t, "invalid-input", d.Code)
+	assert.Equal(t, "replcas", d.Path)
+	assert.Equal(t, "did you mean replicas?", d.Hint)
+	assert.Equal(t, "unknown option", d.Message)
+	assert.Equal(t, "main.ct", d.File)
+	assert.Equal(t, 3, d.Line)
+	require.NotEmpty(t, d.Stack)
+	assert.Contains(t, d.Stack[0].File, "github.com/acme/infra@v1/lib/web.ts")
+}
+
+func TestRender_PlainPackageErrorStaysRuntime(t *testing.T) {
+	err := renderWithPackage(t, `
+export function webApp(opts: any) {
+  throw new Error("boom");
+}
+`)
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 1)
+	d := list[0]
+	assert.Equal(t, "runtime", d.Code)
+	assert.Equal(t, "main.ct", d.File)
+	var files []string
+	for _, f := range d.Stack {
+		files = append(files, f.File)
+	}
+	assert.Contains(t, strings.Join(files, " "), "github.com/acme/infra@v1/lib/web.ts", "package frame stays in the stack")
+	assert.Contains(t, strings.Join(files, " "), "main.ct", "project frame is in the stack")
 }

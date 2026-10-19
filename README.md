@@ -290,7 +290,7 @@ Error: lib/factory.ct:3:10: Error: name is required [runtime]
     at main.ct:4:5
 ```
 
-With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `invalid-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`, `namespace-not-found`, or `error` for anything else):
+With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `invalid-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`, `namespace-not-found`, `invalid-input`, or `error` for anything else):
 
 ```json
 {
@@ -309,6 +309,43 @@ With `--error-format json`, errors go to stderr as JSON with stable codes (`synt
 ```
 
 Validation uses the Kubernetes types `ct` was built with. If your cluster is newer and you use a field `ct` doesn't know yet, pass `--validate=false`.
+
+### Reporting bad input from a package
+
+Factories in packages should check their input and fail with an error that names the field. Throw an `Error` with a string `code`, and optionally a `path` (the field) and a `hint`; `ct` turns it into a diagnostic with exactly that code, path and hint. Use `invalid-input` for a bad argument to a factory:
+
+```ts
+// lib/web-app.ts, inside a package
+export function webApp(opts: { replicas?: number }) {
+  if (opts.replicas !== undefined && typeof opts.replicas !== "number") {
+    throw Object.assign(new Error("expected a number, got " + typeof opts.replicas), {
+      code: "invalid-input",
+      path: "replicas",
+      hint: "pass an integer, e.g. replicas: 3",
+    });
+  }
+  // ...
+}
+```
+
+The diagnostic points at the first stack frame outside imported packages, that is the call in your own code (`main.ct:4:5`), not the `throw` inside the package. The package frames stay in the stack. A plain `throw new Error("...")` (no `code`) is still reported as `runtime`.
+
+```json
+{
+  "errors": [
+    {
+      "code": "invalid-input",
+      "message": "expected a number, got string",
+      "file": "main.ct",
+      "line": 4,
+      "column": 5,
+      "path": "replicas",
+      "hint": "pass an integer, e.g. replicas: 3",
+      "stack": [{ "file": "github.com/acme/infra@v1/lib/web-app.ts", "line": 3, "column": 11, "function": "webApp" }]
+    }
+  ]
+}
+```
 
 ## Releases: apply, list, delete
 
