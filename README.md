@@ -11,6 +11,7 @@
 
 ```bash
 ct init                         # main.ct, values.json, AGENTS.md
+ct check                        # render + validate the base and every values-*.yaml
 ct template my-app . -n prod    # render + validate -> YAML
 ct apply my-app . -n prod       # render + validate + server-side apply + prune
 ```
@@ -132,6 +133,7 @@ ct template my-app . -n production         # render to YAML (validated)
 ct template my-app . -n production -o json
 ct template my-app . -f values.yaml -f values-prod.yaml --set replicas=5
 ct template my-app github.com/acme/my-app@v1.0 -n staging   # render a remote source
+ct check                                   # validate every values variant, one line each
 ```
 
 After `ct init`:
@@ -315,6 +317,23 @@ With `--error-format json`, errors go to stderr as JSON with stable codes (`synt
   ]
 }
 ```
+
+### Every values variant at once — `ct check`
+
+`ct check [dir]` renders and validates without printing manifests and without a cluster. Without `-f` it checks the project values file alone (variant named after it, or `base` when the project has none) and then, separately, the base layered with each `values-*.json|yaml|yml` of the project. With `-f` it checks that one combination. `--set`, `--set-string` and `--validate` work as in `ct template`. `Release.name` is `--name` (default: the directory name) and `Release.namespace` is `-n` (default `default`).
+
+It prints one line per variant on stdout and, on stderr, every diagnostic prefixed with its variant; it exits 1 when any variant has a problem:
+
+```
+$ ct check
+values.yaml       ok
+values-dev.yaml   ok
+values-prod.yaml  1 problem
+Error: 1 of 3 variants failed
+values-prod.yaml: main.ct:4:20: ConfigMap "Bad_Name" (namespace "default"): metadata.name: Invalid value: "Bad_Name": ... [invalid-value]
+```
+
+With `--error-format json` stdout is one document instead — `{ok, release, namespace, variants: [{name, files, ok, errors}]}`, `errors` in the same shape as above — and nothing goes to stderr.
 
 Validation uses the Kubernetes types `ct` was built with. If your cluster is newer and you use a field `ct` doesn't know yet, pass `--validate=false`.
 
@@ -521,6 +540,12 @@ ct template <name> <dir|repo> [flags]
       --set-string stringArray  override a value as a string
       --validate              check objects against the Kubernetes API (default true)
       --no-cache              re-download the source and imported packages
+
+ct check [dir] [flags]
+      --name string           release name for Release.name (default: the directory name)
+  -n, --namespace string      namespace for Release.namespace (default "default")
+  -f, --values stringArray    check this combination only (default: the base and each values-* file)
+      --set, --set-string, --validate   as in ct template
 
 ct apply <name> <dir|repo> [flags]
   (template flags, with -o defaulting to no output, plus)

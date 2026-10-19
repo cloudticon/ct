@@ -70,6 +70,9 @@ func Execute() error {
 // Diagnostics keep their structure (code, file, line, resource, path, hint)
 // in JSON so tools can act on them without parsing text.
 func PrintError(w io.Writer, err error) {
+	if errors.Is(err, errReported) {
+		return
+	}
 	var list diag.List
 	if !errors.As(err, &list) {
 		list = diag.List{{Code: diag.CodeError, Message: err.Error()}}

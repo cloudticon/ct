@@ -19,7 +19,7 @@ These are the same checks as `.github/workflows/build.yml`. Unit tests use a fak
 
 ```
 cmd/ct/              CLI entry point
-internal/cli/        cobra commands: init, template, apply, diff, delete, explain, list, dev, types
+internal/cli/        cobra commands: init, template, check, apply, diff, delete, explain, list, dev, types
 internal/dev/        `ct dev` runner (dev.ct config, patching, port-forward/log/sync wiring)
 internal/output/     YAML/JSON serializer
 internal/scaffold/   `ct init` (main.ct, values.json, AGENTS.md templates)
