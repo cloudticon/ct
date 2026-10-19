@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/cloudticon/ct/pkg/k8s"
@@ -93,4 +94,39 @@ func TestRunDelete_ReturnsErrorWhenDeleteFails(t *testing.T) {
 	err := runDelete(&cobra.Command{}, "my-release", deleteOpts{namespace: "prod"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "delete failure")
+}
+
+func TestRunDelete_DryRunListsInventoryAndChangesNothing(t *testing.T) {
+	fake := withFakeCluster(t)
+	seedRelease(t, fake, "prod", "my-release", 2)
+
+	stdout, stderr := new(bytes.Buffer), new(bytes.Buffer)
+	cmd := &cobra.Command{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+
+	require.NoError(t, runDelete(cmd, "my-release", deleteOpts{namespace: "prod", dryRun: true}))
+
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	assert.Len(t, lines, 2)
+	assert.Contains(t, stderr.String(), "would delete 2 resources")
+	assert.Empty(t, fake.DeleteCalls)
+
+	releases, err := fake.ListReleases(context.Background(), "prod", false)
+	require.NoError(t, err)
+	require.Len(t, releases, 1)
+	assert.Equal(t, 2, releases[0].Resources)
+}
+
+func TestRunDelete_DryRunUnknownReleaseNamesReleaseAndNamespace(t *testing.T) {
+	withFakeCluster(t)
+	cmd := &cobra.Command{}
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+
+	err := runDelete(cmd, "missing", deleteOpts{namespace: "prod", dryRun: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"missing"`)
+	assert.Contains(t, err.Error(), `"prod"`)
+	assert.Equal(t, ExitCodeError, ExitCode(err))
 }

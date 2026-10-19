@@ -80,6 +80,19 @@ func (lc *liveCluster) DeleteRelease(ctx context.Context, ns, release string) (i
 	return len(refs), nil
 }
 
+func (lc *liveCluster) PlanDelete(ctx context.Context, ns, release string) ([]ResourceRef, string, error) {
+	c := lc.scopedClient(ns)
+	target, err := resolveInventoryNamespace(c, ns)
+	if err != nil {
+		return nil, "", err
+	}
+	refs, err := loadInventory(ctx, c, ns, release)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading inventory for release %q: %w", release, err)
+	}
+	return orderForDelete(refs), target, nil
+}
+
 func (lc *liveCluster) ListReleases(ctx context.Context, ns string, allNs bool) ([]ReleaseInfo, error) {
 	c := lc.scopedClient(ns)
 	return listReleases(ctx, c, ns, allNs)

@@ -78,6 +78,11 @@ func (c *client) deleteOne(ctx context.Context, ref ResourceRef) error {
 	return nil
 }
 
+// OrderForDelete returns resources in the order DeleteRelease removes them.
+func OrderForDelete(resources []ResourceRef) []ResourceRef {
+	return orderForDelete(resources)
+}
+
 func orderForDelete(resources []ResourceRef) []ResourceRef {
 	if len(resources) == 0 {
 		return []ResourceRef{}

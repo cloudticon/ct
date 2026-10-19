@@ -54,6 +54,10 @@ type Cluster interface {
 	// using the API server's dry run; it writes nothing, inventory included.
 	PlanRelease(ctx context.Context, ns, release string, resources []Resource, opts PlanOpts) (*Plan, error)
 	DeleteRelease(ctx context.Context, ns, release string) (deleted int, err error)
+	// PlanDelete returns the resources DeleteRelease would remove, in deletion
+	// order, and the namespace the inventory was looked up in. It changes
+	// nothing; an unknown release yields no resources.
+	PlanDelete(ctx context.Context, ns, release string) (resources []ResourceRef, namespace string, err error)
 	ListReleases(ctx context.Context, ns string, allNamespaces bool) ([]ReleaseInfo, error)
 	EnsureNamespace(ctx context.Context, ns string) error
 

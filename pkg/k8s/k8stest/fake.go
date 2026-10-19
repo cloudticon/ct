@@ -279,6 +279,14 @@ func (f *Fake) DeleteRelease(ctx context.Context, ns, release string) (int, erro
 	return len(refs), nil
 }
 
+func (f *Fake) PlanDelete(ctx context.Context, ns, release string) ([]k8s.ResourceRef, string, error) {
+	ns = f.resolveNS(ns)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	refs := append([]k8s.ResourceRef(nil), f.Releases[ns][release]...)
+	return k8s.OrderForDelete(refs), ns, nil
+}
+
 func (f *Fake) ListReleases(ctx context.Context, ns string, allNamespaces bool) ([]k8s.ReleaseInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
