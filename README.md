@@ -376,6 +376,7 @@ ct list -n production       # releases in a namespace
 ct list -A -o json          # all namespaces, structured
 
 ct delete my-app -n production   # deletes what the inventory tracks; no source needed
+ct delete my-app -n production --dry-run   # list what would be deleted, change nothing
 ```
 
 `ct apply` uses server-side apply (field manager `ct`) in Helm's install order. Custom resources wait until the API server serves a CRD applied in the same run. Each release keeps an inventory in the ConfigMap `ct-inventory-<release>` (labels `app.kubernetes.io/managed-by=ct`, `ct.cloudticon.com/instance=<release>`); objects that disappear from the code are pruned on the next apply, including objects created by an apply that failed halfway.
