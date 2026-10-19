@@ -362,6 +362,8 @@ The exit code tells you what to fix:
 
 ## Releases: apply, diff, list, delete
 
+- **Breaking change (beta.2):** `ct apply`, `ct delete` and `ct dev` need `--context` when stdin is not a terminal (agents, CI). Without it they exit with code 2 before any change, listing the kubeconfig contexts and the current one. In a terminal the default context still works, and the command prints its name and API server before it changes anything. Inside a cluster (in-cluster configuration) `--context` is not needed, and `ct list` never needs it. CI scripts that call `ct apply` without `--context` must add it.
+
 ```bash
 ct apply my-app . -n production                     # render + validate + apply + prune
 ct apply my-app . -n development --create-namespace
@@ -490,7 +492,7 @@ ct template <name> <dir|repo> [flags]
 
 ct apply <name> <dir|repo> [flags]
   (template flags, with -o defaulting to no output, plus)
-      --context string        kubeconfig context to use
+      --context string        kubeconfig context to use (required when stdin is not a terminal)
       --create-namespace      create the namespace if it does not exist
       --dry-run               check every object with the API server and print what would change; write nothing
 
@@ -500,7 +502,7 @@ ct diff <name> <dir|repo> [flags]
 
 ct delete <name> [flags]
   -n, --namespace string      namespace holding the release inventory
-      --context string        kubeconfig context to use
+      --context string        kubeconfig context to use (required when stdin is not a terminal)
 
 ct list [flags]
   -n, --namespace string      namespace to search
@@ -510,7 +512,7 @@ ct list [flags]
 
 ct dev [flags]
       --env-file string       .env file to load ("" to skip) (default ".env")
-      --context string        kubeconfig context
+      --context string        kubeconfig context (required when stdin is not a terminal)
       --name string           release name for labels/inventory (default "dev")
       --create-namespace      create the namespace before apply (default true)
       --delete                delete the dev release and exit

@@ -30,7 +30,7 @@ func newDeleteCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&opts.namespace, "namespace", "n", "", "namespace that contains release inventory")
-	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
+	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use (required when stdin is not a terminal)")
 
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "list the resources that would be deleted without changing the cluster")
 
@@ -42,6 +42,9 @@ func init() {
 }
 
 func runDelete(cmd *cobra.Command, releaseName string, opts deleteOpts) error {
+	if err := requireKubeContext(cmd, opts.context); err != nil {
+		return err
+	}
 	cluster, err := newClusterFn(opts.context, opts.namespace)
 	if err != nil {
 		return clusterError(fmt.Errorf("creating k8s client: %w", err))

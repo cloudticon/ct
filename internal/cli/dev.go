@@ -35,7 +35,7 @@ func newDevCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&opts.envFile, "env-file", ".env", "path to .env file (empty to skip)")
-	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context")
+	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context (required when stdin is not a terminal)")
 	cmd.Flags().StringVar(&opts.releaseName, "name", "dev", "release name for inventory and labels")
 	cmd.Flags().BoolVar(&opts.delete, "delete", false, "delete resources from previous dev session")
 	cmd.Flags().BoolVar(&opts.createNamespace, "create-namespace", true, "create namespace if it does not exist")
@@ -48,6 +48,9 @@ func init() {
 }
 
 func runDev(cmd *cobra.Command, opts devOpts) error {
+	if err := requireKubeContext(cmd, opts.context); err != nil {
+		return err
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("resolving working directory: %w", err)

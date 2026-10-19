@@ -44,7 +44,7 @@ func newApplyCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.outputFmt, "output", "o", "", "output format: yaml or json (default: no output)")
 	addRenderFlags(cmd, &opts.templateOpts)
 	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "re-download the remote source and imported packages instead of using ~/.ct/cache")
-	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
+	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use (required when stdin is not a terminal)")
 	cmd.Flags().BoolVar(&opts.createNamespace, "create-namespace", false, "create namespace if it does not exist")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "check every object with the API server and print what would be created, changed and pruned, without writing anything")
 
@@ -56,6 +56,12 @@ func init() {
 }
 
 func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) error {
+	if err := validateReleaseName(releaseName); err != nil {
+		return err
+	}
+	if err := requireKubeContext(cmd, opts.context); err != nil {
+		return err
+	}
 	resources, where, err := renderForApply(releaseName, source, &opts)
 	if err != nil {
 		return err

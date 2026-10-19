@@ -47,6 +47,12 @@ func runDiff(cmd *cobra.Command, releaseName, source string, opts applyOpts) err
 		return usageError(cmd, fmt.Errorf("unsupported output format: %s (use text or json)", opts.outputFmt))
 	}
 
+	if err := validateReleaseName(releaseName); err != nil {
+		return err
+	}
+	if err := requireKubeContext(cmd, opts.context); err != nil {
+		return err
+	}
 	resources, where, err := renderForApply(releaseName, source, &opts)
 	if err != nil {
 		return err
