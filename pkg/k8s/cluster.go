@@ -50,6 +50,9 @@ type LiveOpts struct {
 type Cluster interface {
 	// Release lifecycle.
 	ApplyRelease(ctx context.Context, ns, release string, resources []Resource) error
+	// PlanRelease reports what ApplyRelease would create, change and prune,
+	// using the API server's dry run; it writes nothing, inventory included.
+	PlanRelease(ctx context.Context, ns, release string, resources []Resource, opts PlanOpts) (*Plan, error)
 	DeleteRelease(ctx context.Context, ns, release string) (deleted int, err error)
 	ListReleases(ctx context.Context, ns string, allNamespaces bool) ([]ReleaseInfo, error)
 	EnsureNamespace(ctx context.Context, ns string) error

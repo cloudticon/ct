@@ -57,6 +57,14 @@ func (lc *liveCluster) ApplyRelease(ctx context.Context, ns, release string, res
 	return c.applyRelease(ctx, ns, release, resources)
 }
 
+func (lc *liveCluster) PlanRelease(ctx context.Context, ns, release string, resources []Resource, opts PlanOpts) (*Plan, error) {
+	c := lc.scopedClient(ns)
+	if ns == "" {
+		ns = c.Namespace
+	}
+	return c.planRelease(ctx, ns, release, resources, opts)
+}
+
 func (lc *liveCluster) DeleteRelease(ctx context.Context, ns, release string) (int, error) {
 	c := lc.scopedClient(ns)
 	refs, err := loadInventory(ctx, c, ns, release)

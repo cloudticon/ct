@@ -76,6 +76,7 @@ type Fake struct {
 	// invoked before any Fake state change so tests can inject errors or
 	// custom IO.
 	ApplyHook       func(ns, release string, resources []k8s.Resource) error
+	PlanHook        func(ns, release string, resources []k8s.Resource, opts k8s.PlanOpts) (*k8s.Plan, error)
 	DeleteHook      func(ns, release string) (deleted int, err error)
 	ExecHook        func(ns, pod string, opts k8s.ExecOpts) error
 	PortForwardHook func(ns string, sel k8s.Selector, ports []k8s.PortRule) error
@@ -88,6 +89,7 @@ type Fake struct {
 
 	// Recorded calls. Append-only; tests assert on length / contents.
 	ApplyCalls  []ApplyCall
+	PlanCalls   []ApplyCall
 	DeleteCalls []DeleteCall
 	ExecCalls   []ExecCall
 
@@ -199,6 +201,69 @@ func (f *Fake) ApplyRelease(ctx context.Context, ns, release string, resources [
 	f.Releases[ns][release] = refs
 	f.ApplyCalls = append(f.ApplyCalls, ApplyCall{Namespace: ns, Release: release, Resources: resources})
 	return nil
+}
+
+// PlanRelease records the call and, without PlanHook, plans from the
+// inventory alone: objects the release already tracks are "none", others
+// "create", and tracked objects missing from resources "prune". It never
+// changes Releases. Rejections fail like in ApplyRelease, all of them joined.
+func (f *Fake) PlanRelease(ctx context.Context, ns, release string, resources []k8s.Resource, opts k8s.PlanOpts) (*k8s.Plan, error) {
+	ns = f.resolveNS(ns)
+	f.mu.Lock()
+	f.PlanCalls = append(f.PlanCalls, ApplyCall{Namespace: ns, Release: release, Resources: resources})
+	old := append([]k8s.ResourceRef{}, f.Releases[ns][release]...)
+	f.mu.Unlock()
+	if f.PlanHook != nil {
+		return f.PlanHook(ns, release, resources, opts)
+	}
+
+	key := func(r k8s.ResourceRef) string {
+		rns := r.Namespace
+		if rns == "" {
+			rns = ns
+		}
+		return r.Kind + "|" + rns + "|" + r.Name
+	}
+	tracked := map[string]bool{}
+	for _, r := range old {
+		tracked[key(r)] = true
+	}
+
+	plan := &k8s.Plan{}
+	current := map[string]bool{}
+	var errs []error
+	for i, res := range resources {
+		ref, err := refOf(res, i)
+		if err != nil {
+			return nil, err
+		}
+		if err := f.rejection(ref); err != nil {
+			errs = append(errs, &k8s.ObjectError{Object: res, Err: err})
+			continue
+		}
+		current[key(ref)] = true
+		action := k8s.ActionCreate
+		if tracked[key(ref)] {
+			action = k8s.ActionNone
+		}
+		plan.Objects = append(plan.Objects, plannedOf(ref, ns, action))
+	}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	for _, r := range old {
+		if !current[key(r)] {
+			plan.Objects = append(plan.Objects, plannedOf(r, ns, k8s.ActionPrune))
+		}
+	}
+	return plan, nil
+}
+
+func plannedOf(ref k8s.ResourceRef, ns string, action k8s.Action) k8s.PlannedObject {
+	if ref.Namespace != "" {
+		ns = ref.Namespace
+	}
+	return k8s.PlannedObject{Action: action, APIVersion: ref.APIVersion, Kind: ref.Kind, Namespace: ns, Name: ref.Name}
 }
 
 func (f *Fake) DeleteRelease(ctx context.Context, ns, release string) (int, error) {

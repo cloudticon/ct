@@ -20,6 +20,7 @@ type applyOpts struct {
 	templateOpts
 	context         string
 	createNamespace bool
+	dryRun          bool
 }
 
 var resolveSourceDirForApply = resolveSourceDir
@@ -31,8 +32,8 @@ func newApplyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "apply <name> <dir|repo>",
 		Short:   "Render and apply Kubernetes manifests to a cluster",
-		Long:    "Bundles and executes main.ct from the given directory, then applies the resulting manifests via server-side apply. Injects release labels, tracks inventory, and prunes orphaned resources.",
-		Example: "ct apply my-app . -n production",
+		Long:    "Bundles and executes main.ct from the given directory, then applies the resulting manifests via server-side apply. Injects release labels, tracks inventory, and prunes orphaned resources. With --dry-run the API server checks every object without saving it, and ct prints what would be created, changed and pruned.",
+		Example: "ct apply my-app . -n production\nct apply my-app . -n production --dry-run",
 		Args:    usageArgs(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runApply(cmd, args[0], args[1], opts)
@@ -45,6 +46,7 @@ func newApplyCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.noCache, "no-cache", false, "re-download the remote source and imported packages instead of using ~/.ct/cache")
 	cmd.Flags().StringVar(&opts.context, "context", "", "kubeconfig context to use")
 	cmd.Flags().BoolVar(&opts.createNamespace, "create-namespace", false, "create namespace if it does not exist")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "check every object with the API server and print what would be created, changed and pruned, without writing anything")
 
 	return cmd
 }
@@ -54,26 +56,24 @@ func init() {
 }
 
 func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) error {
-	if err := validateReleaseName(releaseName); err != nil {
-		return err
-	}
-	resolvedDir, err := resolveSourceDirForApply(source, opts.noCache)
+	resources, where, err := renderForApply(releaseName, source, &opts)
 	if err != nil {
 		return err
 	}
-
-	opts.templateOpts.releaseName = releaseName
-	opts.templateOpts.sourceURL = remoteSourceURL(source)
-	resources, where, err := renderResourcesForApply(resolvedDir, opts.templateOpts)
-	if err != nil {
-		return err
-	}
-
-	resources = k8s.InjectReleaseLabels(resources, releaseName)
 
 	cluster, err := newClusterFn(opts.context, opts.namespace)
 	if err != nil {
 		return clusterError(fmt.Errorf("creating k8s client: %w", err))
+	}
+
+	if opts.dryRun {
+		plan, err := planRelease(cmd.Context(), cluster, releaseName, resources, where, opts)
+		if err != nil {
+			return err
+		}
+		writePlan(cmd.ErrOrStderr(), plan, false)
+		fmt.Fprintln(cmd.ErrOrStderr(), "dry run: nothing was written to the cluster")
+		return writeApplyOutput(cmd, resources, opts.outputFmt)
 	}
 
 	if err := ensureApplyNamespace(cmd.Context(), cluster, opts.namespace, opts.createNamespace); err != nil {
@@ -84,14 +84,69 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 		return clusterError(applyError(err, where))
 	}
 
-	if opts.outputFmt != "" {
-		out, err := output.Serialize(toOutputResources(resources), opts.outputFmt)
-		if err != nil {
-			return fmt.Errorf("serialization failed: %w", err)
-		}
-		fmt.Fprint(cmd.OutOrStdout(), out)
+	return writeApplyOutput(cmd, resources, opts.outputFmt)
+}
+
+// renderForApply renders the release the way apply sends it: validated, with
+// release labels.
+func renderForApply(releaseName, source string, opts *applyOpts) ([]k8s.Resource, origins, error) {
+	if err := validateReleaseName(releaseName); err != nil {
+		return nil, nil, err
+	}
+	resolvedDir, err := resolveSourceDirForApply(source, opts.noCache)
+	if err != nil {
+		return nil, nil, err
 	}
 
+	opts.templateOpts.releaseName = releaseName
+	opts.templateOpts.sourceURL = remoteSourceURL(source)
+	resources, where, err := renderResourcesForApply(resolvedDir, opts.templateOpts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return k8s.InjectReleaseLabels(resources, releaseName), where, nil
+}
+
+// planRelease asks the cluster what apply would do and turns rejections of
+// any number of objects into diagnostics.
+func planRelease(ctx context.Context, cluster k8s.Cluster, releaseName string, resources []k8s.Resource, where origins, opts applyOpts) (*k8s.Plan, error) {
+	plan, err := cluster.PlanRelease(ctx, opts.namespace, releaseName, resources, k8s.PlanOpts{CreateNamespace: opts.createNamespace})
+	if err != nil {
+		return nil, clusterError(planError(err, where))
+	}
+	return plan, nil
+}
+
+// planError is applyError for every object a dry run rejected.
+func planError(err error, where origins) error {
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		return applyError(err, where)
+	}
+	var list diag.List
+	for _, e := range joined.Unwrap() {
+		var objErr *k8s.ObjectError
+		if !errors.As(e, &objErr) {
+			return applyError(err, where)
+		}
+		var l diag.List
+		if !errors.As(applyError(e, where), &l) {
+			return applyError(err, where)
+		}
+		list = append(list, l...)
+	}
+	return list
+}
+
+func writeApplyOutput(cmd *cobra.Command, resources []k8s.Resource, format string) error {
+	if format == "" {
+		return nil
+	}
+	out, err := output.Serialize(toOutputResources(resources), format)
+	if err != nil {
+		return fmt.Errorf("serialization failed: %w", err)
+	}
+	fmt.Fprint(cmd.OutOrStdout(), out)
 	return nil
 }
 

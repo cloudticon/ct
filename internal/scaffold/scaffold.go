@@ -39,6 +39,9 @@ read in code as ` + "`Values.<key>`" + `.
   code; add ` + "`--error-format json`" + ` for machine-readable errors.
 - Environments: ` + "`ct template <release> . -f values.json -f values-prod.json`" + `
   (files deep-merge left to right); one-off overrides with ` + "`--set key=value`" + `.
+- Preview: ` + "`ct diff <release> . -n <namespace>`" + ` lists what apply would create,
+  change and prune (` + "`-o json`" + ` for tools); ` + "`ct apply ... --dry-run`" + ` checks every
+  object with the API server without writing. Run one of them before applying.
 - Deploy: ` + "`ct apply <release> . -n <namespace>`" + ` (server-side apply, prunes
   objects removed from the code). Remove: ` + "`ct delete <release> -n <namespace>`" + `.
 - Editor types: ` + "`ct types .`" + `.

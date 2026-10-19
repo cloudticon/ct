@@ -356,17 +356,21 @@ The exit code tells you what to fix:
 | 0 | Success | - |
 | 1 | Error in `.ct` code, values or manifests (render and validation) | Fix the code; the diagnostic has `file:line` |
 | 2 | Wrong use of `ct` (arguments, flags, unknown command) | Fix the call; the error shows the usage line and an example |
-| 3 | Cluster error (connection, authorization, request rejected by apply, delete, list, dev) | Check the cluster, kubeconfig and `--context` |
+| 3 | Cluster error (connection, authorization, request rejected by apply, diff, delete, list, dev) | Check the cluster, kubeconfig and `--context` |
 
 `--error-format json` keeps the same codes. Releases before `v0.1.0-beta.2` exited with 1 for every error; scripts that test for exactly 1 must accept 2 and 3 too.
 
-## Releases: apply, list, delete
+## Releases: apply, diff, list, delete
 
 ```bash
 ct apply my-app . -n production                     # render + validate + apply + prune
 ct apply my-app . -n development --create-namespace
 ct apply my-app . -n production --context prod-cluster -o yaml
 ct apply my-app github.com/acme/my-app@v1.0 -n staging
+
+ct diff my-app . -n production                      # what apply would create, change and prune
+ct diff my-app . -n production -o json              # the same as a list of objects with an action
+ct apply my-app . -n production --dry-run           # server-side checks and the summary, nothing written
 
 ct list -n production       # releases in a namespace
 ct list -A -o json          # all namespaces, structured
@@ -386,6 +390,59 @@ When the cluster rejects an object, the error names the object and points at the
 $ ct apply web . -n prod --context kind-ct-test --set app=web2
 Error: main.ct:3:20: Deployment "web" (namespace "prod"): spec.selector: Invalid value: {"matchLabels":{"app":"web2"}}: field is immutable [invalid-value]
   hint: this field can't change on an existing object: keep the old value, or delete the object (or the release) and apply again to recreate it
+```
+
+### Preview: `ct diff` and `ct apply --dry-run`
+
+Both take the same arguments and flags as `ct apply`, send every object to the API server as a server-side apply dry run (`dryRun=All`, so admission and schema checks run) and compare the result with the live object. Nothing is written to the cluster, the inventory included; `--create-namespace` only tells the plan that the namespace would exist.
+
+- `ct diff` prints, on stdout, one line per object with its action — `create`, `change` or `none` — and a unified diff of the YAML (`--- live`, `+++ ct`) for created and changed objects, then the objects prune would delete (`prune`) and a one-line summary. Status and server-owned metadata (`managedFields`, `resourceVersion`, `uid`, ...) are not compared. It exits 0 whether or not something would change.
+- `ct diff -o json` prints a JSON list of `{action, apiVersion, kind, namespace, name, diff}`, with `action` one of `create`, `change`, `none`, `prune`.
+- `ct apply --dry-run` prints the same lines and summary without diffs, on stderr like the rest of apply's report; `-o yaml|json` still prints the rendered objects on stdout.
+- Secret values never reach the output: every value under `data` and `stringData` (and kubectl's `last-applied-configuration` copy) shows as `***`, and a changed value as `*** (changed)`, so the diff still tells which keys are added, removed or changed.
+- Objects the API server would reject fail the command with the same diagnostics as `ct apply`, one per rejected object in a single run.
+
+```
+$ ct diff web . -n demo --context kind-ct-test
+change v1 Secret demo/creds
+--- live
++++ ct
+@@ -1,6 +1,6 @@
+ apiVersion: v1
+ data:
+-  password: '***'
++  password: '*** (changed)'
+ kind: Secret
+ metadata:
+   labels:
+create v1 ConfigMap demo/cfg
+--- live
++++ ct
+@@ -0,0 +1,10 @@
++apiVersion: v1
++data:
++  mode: prod
++kind: ConfigMap
++metadata:
++  labels:
++    app.kubernetes.io/managed-by: ct
++    ct.cloudticon.com/instance: web
++  name: cfg
++  namespace: demo
+change apps/v1 Deployment demo/web
+--- live
++++ ct
+@@ -10,7 +10,7 @@
+   namespace: demo
+ spec:
+   progressDeadlineSeconds: 600
+-  replicas: 1
++  replicas: 3
+   revisionHistoryLimit: 10
+   selector:
+     matchLabels:
+prune  v1 Service demo/old
+Plan: 1 to create, 2 to change, 1 to prune, 0 unchanged.
 ```
 
 ## Development mode — `ct dev`
@@ -434,6 +491,11 @@ ct apply <name> <dir|repo> [flags]
   (template flags, with -o defaulting to no output, plus)
       --context string        kubeconfig context to use
       --create-namespace      create the namespace if it does not exist
+      --dry-run               check every object with the API server and print what would change; write nothing
+
+ct diff <name> <dir|repo> [flags]
+  (apply flags, except --dry-run, with)
+  -o, --output string         text or json (default text)
 
 ct delete <name> [flags]
   -n, --namespace string      namespace holding the release inventory
@@ -510,7 +572,7 @@ pkg/
   diag/              structured diagnostics
   manifest/          pure object transforms: cleaning, namespaces, ordering, duplicates
   validate/          Kubernetes schema and admission checks
-  k8s/               cluster port: apply, inventory, prune, exec, port-forward, logs
+  k8s/               cluster port: apply, dry-run plan, inventory, prune, exec, port-forward, logs
   sync/              ct dev file sync
   cache/             URL import cache
   packages/          import parsing and dependency sync
