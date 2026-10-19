@@ -1,0 +1,14 @@
+{
+  "errors": [
+    {
+      "code": "unknown-field",
+      "message": "unknown field",
+      "file": "main.ct",
+      "line": 1,
+      "column": 20,
+      "resource": "Deployment \"web\"",
+      "path": "spec.template.spec.containers[0].imagePullPolice",
+      "hint": "check the field name and nesting with `ct explain Deployment.spec.template.spec.containers`; if your cluster is newer than this ct build, pass --validate=false"
+    }
+  ]
+}

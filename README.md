@@ -310,6 +310,30 @@ With `--error-format json`, errors go to stderr as JSON with stable codes (`synt
 
 Validation uses the Kubernetes types `ct` was built with. If your cluster is newer and you use a field `ct` doesn't know yet, pass `--validate=false`.
 
+### Field reference offline — `ct explain`
+
+An unknown-field diagnostic points at `ct explain` for the object around the field (e.g. ``hint: check the field name and nesting with `ct explain Deployment.spec.template.spec.containers` ``). It shows the fields of a built-in kind, or of a field path inside it, with types, `-required-` markers and descriptions — from the same Kubernetes types validation uses, so it needs no cluster and no network:
+
+```
+$ ct explain Deployment.spec.strategy
+KIND:       Deployment
+VERSION:    apps/v1
+
+FIELD: spec.strategy <DeploymentStrategy>
+
+DESCRIPTION:
+    The deployment strategy to use to replace existing pods with new ones.
+
+FIELDS:
+  rollingUpdate	<RollingUpdateDeployment>
+    Rolling update config params. Present only if DeploymentStrategyType = RollingUpdate.
+
+  type	<string>
+    Type of deployment. Can be "Recreate" or "RollingUpdate". Default is RollingUpdate.
+```
+
+Kinds are case-insensitive and list indexes are ignored (`ct explain pod.spec.containers[0].resources`). A kind served under several apiVersions resolves to the stable, newest one (core group first); pick another with `--api-version autoscaling/v1`. `-o json` prints one JSON document (`kind`, `apiVersion`, `path`, `type`, `required`, `description`, `fields[]`). An unknown kind or field exits with code 2 and names the closest match (`Deployment.spec has no field "replcas"` → `did you mean "replicas"`). Custom resources are not covered — their schemas live in their CRDs.
+
 ### Reporting bad input from a package
 
 Factories in packages should check their input and fail with an error that names the field. Throw an `Error` with a string `code`, and optionally a `path` (the field) and a `hint`; `ct` turns it into a diagnostic with exactly that code, path and hint. Use `invalid-input` for a bad argument to a factory:
@@ -504,6 +528,10 @@ ct delete <name> [flags]
   -n, --namespace string      namespace holding the release inventory
       --context string        kubeconfig context to use (required when stdin is not a terminal)
 
+ct explain <Kind>[.<field>...] [flags]
+      --api-version string    apiVersion of the kind when it is served under several
+  -o, --output string         text or json (default text)
+
 ct list [flags]
   -n, --namespace string      namespace to search
   -A, --all-namespaces        list releases across all namespaces
@@ -575,6 +603,7 @@ pkg/
   diag/              structured diagnostics
   manifest/          pure object transforms: cleaning, namespaces, ordering, duplicates
   validate/          Kubernetes schema and admission checks
+  explain/           offline field reference for built-in kinds (ct explain)
   k8s/               cluster port: apply, dry-run plan, inventory, prune, exec, port-forward, logs
   sync/              ct dev file sync
   cache/             URL import cache

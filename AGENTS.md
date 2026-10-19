@@ -19,7 +19,7 @@ These are the same checks as `.github/workflows/build.yml`. Unit tests use a fak
 
 ```
 cmd/ct/              CLI entry point
-internal/cli/        cobra commands: init, template, apply, diff, delete, list, dev, types
+internal/cli/        cobra commands: init, template, apply, diff, delete, explain, list, dev, types
 internal/dev/        `ct dev` runner (dev.ct config, patching, port-forward/log/sync wiring)
 internal/output/     YAML/JSON serializer
 internal/scaffold/   `ct init` (main.ct, values.json, AGENTS.md templates)
@@ -27,6 +27,7 @@ pkg/engine/          esbuild transpiler + Goja runtime + values loading
 pkg/diag/            structured diagnostics (stable codes, positions, hints)
 pkg/manifest/        pure object transforms: cleaning, namespaces, ordering, duplicates
 pkg/validate/        Kubernetes schema and admission checks
+pkg/explain/         offline field reference for built-in kinds (`ct explain`)
 pkg/k8s/             cluster port: apply, dry-run plan, inventory, prune, exec, port-forward, logs; k8stest/ holds the fake
 pkg/sync/            `ct dev` file sync
 pkg/cache/           URL import cache

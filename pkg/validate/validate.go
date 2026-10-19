@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/cloudticon/ct/pkg/diag"
+	"github.com/cloudticon/ct/pkg/explain"
 	"github.com/cloudticon/ct/pkg/manifest"
 	apivalidation "k8s.io/apimachinery/pkg/api/validation"
 	pathvalidation "k8s.io/apimachinery/pkg/api/validation/path"
@@ -35,13 +36,14 @@ import (
 func Resources(resources []manifest.Resource, origin func(i int) []diag.Frame) diag.List {
 	var list diag.List
 	for i, res := range resources {
+		kind, _ := res["kind"].(string)
 		for _, fe := range checkResource(res) {
 			d := diag.Diagnostic{
 				Code:     codeFor(fe),
 				Message:  messageFor(fe),
 				Resource: manifest.Ref(res),
 				Path:     fe.Field,
-				Hint:     hintFor(fe),
+				Hint:     hintFor(fe, kind),
 			}
 			if origin != nil {
 				d = d.AtChain(origin(i))
@@ -84,12 +86,12 @@ func codeFor(fe *field.Error) string {
 	}
 }
 
-func hintFor(fe *field.Error) string {
+func hintFor(fe *field.Error, kind string) string {
 	switch {
 	case fe.Type == unknownField && strings.HasPrefix(fe.Field, "spec.") && strings.Count(fe.Field, ".") == 1:
-		return "check the field name and nesting; for workloads, container fields (image, ports, env) go under spec.template.spec.containers[]"
+		return "check the field name and nesting (" + explainCommand(kind, fe.Field) + " lists the fields there); for workloads, container fields (image, ports, env) go under spec.template.spec.containers[]"
 	case fe.Type == unknownField:
-		return "check the field name and nesting against the Kubernetes API reference (`kubectl explain`); if your cluster is newer than this ct build, pass --validate=false"
+		return "check the field name and nesting with " + explainCommand(kind, fe.Field) + "; if your cluster is newer than this ct build, pass --validate=false"
 	case fe.Type == unknownKind && fe.Field == "kind":
 		return "if the kind comes from a Kubernetes release newer than this ct build, pass --validate=false"
 	case strings.HasPrefix(fe.Detail, "expected a string, got"):
@@ -100,6 +102,15 @@ func hintFor(fe *field.Error) string {
 		return "names are lowercase letters, digits and '-' (Services and Namespaces also no '.'), starting and ending with a letter or digit"
 	}
 	return ""
+}
+
+// explainCommand is the `ct explain` call listing the fields next to path.
+func explainCommand(kind, path string) string {
+	query := kind
+	if parent := explain.FieldPath(path); parent != "" {
+		query += "." + parent
+	}
+	return "`ct explain " + query + "`"
 }
 
 var strictDecoder = kjson.NewSerializerWithOptions(kjson.DefaultMetaFactory, scheme.Scheme, scheme.Scheme,

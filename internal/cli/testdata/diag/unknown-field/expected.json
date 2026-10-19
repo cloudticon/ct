@@ -8,7 +8,7 @@
       "column": 20,
       "resource": "Deployment \"web\"",
       "path": "spec.replcas",
-      "hint": "check the field name and nesting; for workloads, container fields (image, ports, env) go under spec.template.spec.containers[]"
+      "hint": "check the field name and nesting (`ct explain Deployment.spec` lists the fields there); for workloads, container fields (image, ports, env) go under spec.template.spec.containers[]"
     }
   ]
 }
