@@ -82,6 +82,10 @@ type Fake struct {
 	StreamLogsHook  func(ns, target string, sel k8s.Selector, w io.Writer) error
 	WatchPodHook    func(ns, pod string) error
 
+	// Rejections make ApplyRelease fail on matching objects the way the API
+	// server does: with a *k8s.ObjectError wrapping Err. See Reject.
+	Rejections []Rejection
+
 	// Recorded calls. Append-only; tests assert on length / contents.
 	ApplyCalls  []ApplyCall
 	DeleteCalls []DeleteCall
@@ -93,6 +97,22 @@ type Fake struct {
 
 	mu        sync.Mutex
 	activeOps int32 // goroutines currently inside long-lived ops (port-fwd, logs, exec)
+}
+
+// Rejection fails the apply of every object with this kind and name.
+type Rejection struct {
+	Kind string
+	Name string
+	// Err is what the API server answers, e.g. apierrors.NewInvalid(...).
+	Err error
+}
+
+// Reject makes ApplyRelease fail on the object kind/name with err, wrapped
+// in a *k8s.ObjectError like the real client does.
+func (f *Fake) Reject(kind, name string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Rejections = append(f.Rejections, Rejection{Kind: kind, Name: name, Err: err})
 }
 
 // NewFake returns a zero-value-ready Fake with maps allocated.
@@ -164,6 +184,9 @@ func (f *Fake) ApplyRelease(ctx context.Context, ns, release string, resources [
 		ref, err := refOf(res, i)
 		if err != nil {
 			return err
+		}
+		if err := f.rejection(ref); err != nil {
+			return fmt.Errorf("applying resources: %w", &k8s.ObjectError{Object: res, Err: err})
 		}
 		refs = append(refs, ref)
 	}
@@ -318,6 +341,17 @@ func (f *Fake) StreamLogs(ctx context.Context, ns, target string, sel k8s.Select
 }
 
 // --- helpers ---
+
+func (f *Fake) rejection(ref k8s.ResourceRef) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, r := range f.Rejections {
+		if r.Kind == ref.Kind && r.Name == ref.Name {
+			return r.Err
+		}
+	}
+	return nil
+}
 
 func (f *Fake) resolveNS(ns string) string {
 	if ns != "" {

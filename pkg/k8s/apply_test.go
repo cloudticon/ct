@@ -8,10 +8,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/discovery"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
@@ -152,8 +154,11 @@ func TestResolveResourceInfo_KindNotFound(t *testing.T) {
 	}
 
 	_, err := c.resolveResourceInfo("apps/v1", "NonExistent")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	var unknown *UnknownKindError
+	require.ErrorAs(t, err, &unknown)
+	assert.Equal(t, "NonExistent", unknown.Kind)
+	assert.False(t, unknown.GroupVersionMissing)
+	assert.EqualError(t, err, `the cluster does not serve kind "NonExistent" in apiVersion "apps/v1"`)
 }
 
 func TestApply_NamespacedResource(t *testing.T) {
@@ -413,6 +418,37 @@ func TestApply_UnknownKindWithoutCRDFailsFast(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Less(t, time.Since(start), time.Second, "no CRD in the release, so no waiting")
+
+	var objErr *ObjectError
+	require.ErrorAs(t, err, &objErr, "the failing object is attached to the error")
+	assert.Equal(t, "w", objErr.Object["metadata"].(map[string]interface{})["name"])
+	var unknown *UnknownKindError
+	require.ErrorAs(t, err, &unknown)
+	assert.True(t, unknown.GroupVersionMissing, "nothing is served in example.com/v1")
+	assert.Contains(t, err.Error(), `applying Widget "w"`)
+}
+
+func TestApply_RejectedObjectReturnsObjectError(t *testing.T) {
+	c, dynClient := newTestClient(t, []*metav1.APIResourceList{{
+		GroupVersion: "apps/v1",
+		APIResources: []metav1.APIResource{{Name: "deployments", Kind: "Deployment", Namespaced: true}},
+	}})
+	invalid := apierrors.NewInvalid(schema.GroupKind{Group: "apps", Kind: "Deployment"}, "web", field.ErrorList{
+		field.Invalid(field.NewPath("spec", "selector"), "x", "field is immutable"),
+	})
+	dynClient.PrependReactor("patch", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, invalid
+	})
+
+	err := c.apply(context.Background(), []Resource{
+		{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": map[string]interface{}{"name": "web"}},
+	})
+
+	var objErr *ObjectError
+	require.ErrorAs(t, err, &objErr)
+	assert.Equal(t, "Deployment", objErr.Object["kind"])
+	assert.True(t, apierrors.IsInvalid(err), "the API server error stays reachable")
+	assert.Contains(t, err.Error(), `applying Deployment "web"`)
 }
 
 type countingDiscovery struct {

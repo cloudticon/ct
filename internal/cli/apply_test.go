@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 )
 
 func TestApplyCmd_MissingMainCt(t *testing.T) {
@@ -136,7 +139,7 @@ func TestRunApply_CreatesNamespaceAndAppliesRelease(t *testing.T) {
 	resolveSourceDirForApply = func(source string, noCache bool) (string, error) {
 		return "/tmp/fake-source", nil
 	}
-	renderResourcesForApply = func(dir string, opts templateOpts) ([]k8s.Resource, error) {
+	renderResourcesForApply = func(dir string, opts templateOpts) ([]k8s.Resource, origins, error) {
 		return []k8s.Resource{
 			{
 				"apiVersion": "v1",
@@ -146,7 +149,7 @@ func TestRunApply_CreatesNamespaceAndAppliesRelease(t *testing.T) {
 					"namespace": "dev",
 				},
 			},
-		}, nil
+		}, nil, nil
 	}
 
 	err := runApply(&cobra.Command{}, "my-release", ".", applyOpts{
@@ -171,7 +174,7 @@ func TestRunApply_CreatesNamespaceAndAppliesRelease(t *testing.T) {
 func TestApplyError_MissingNamespaceGetsHint(t *testing.T) {
 	notFound := apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "ghost")
 
-	err := applyError(fmt.Errorf("applying resources: %w", notFound))
+	err := applyError(fmt.Errorf("applying resources: %w", notFound), nil)
 
 	var list diag.List
 	require.ErrorAs(t, err, &list)
@@ -180,6 +183,142 @@ func TestApplyError_MissingNamespaceGetsHint(t *testing.T) {
 }
 
 func TestApplyError_OtherErrorsPassThrough(t *testing.T) {
-	err := applyError(errors.New("boom"))
+	err := applyError(errors.New("boom"), nil)
 	assert.EqualError(t, err, "apply failed: boom")
+}
+
+// applyProject is a project whose Deployment is registered at main.ct:3:20.
+const applyProject = `const app = "web";
+
+__ct_resources.push({
+  apiVersion: "apps/v1",
+  kind: "Deployment",
+  metadata: { name: app },
+  spec: {
+    selector: { matchLabels: { app } },
+    template: {
+      metadata: { labels: { app } },
+      spec: { containers: [{ name: app, image: "nginx" }] },
+    },
+  },
+});
+`
+
+// runRejectedApply applies applyProject to a fake cluster that answers the
+// Deployment with err, and returns what ct prints with --error-format json.
+func runRejectedApply(t *testing.T, err error) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.ct"), []byte(applyProject), 0o644))
+	fake := withFakeCluster(t)
+	fake.Reject("Deployment", "web", err)
+	withErrorFormat(t, "json")
+
+	cmd := newApplyCmd()
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+	cmd.SetArgs([]string{"demo", dir})
+	runErr := cmd.Execute()
+	require.Error(t, runErr)
+
+	var out bytes.Buffer
+	PrintError(&out, runErr)
+	return out.String()
+}
+
+func TestRunApply_FieldRejectedByClusterPointsAtRegistration(t *testing.T) {
+	invalid := apierrors.NewInvalid(schema.GroupKind{Group: "apps", Kind: "Deployment"}, "web", field.ErrorList{
+		field.Invalid(field.NewPath("spec", "selector"), "{app: web2}", "field is immutable"),
+		field.Required(field.NewPath("spec", "template", "spec", "containers").Index(0).Child("image"), ""),
+	})
+
+	got := runRejectedApply(t, invalid)
+
+	assert.Equal(t, `{
+  "errors": [
+    {
+      "code": "invalid-value",
+      "message": "Invalid value: \"{app: web2}\": field is immutable",
+      "file": "main.ct",
+      "line": 3,
+      "column": 20,
+      "resource": "Deployment \"web\"",
+      "path": "spec.selector",
+      "hint": "this field can't change on an existing object: keep the old value, or delete the object (or the release) and apply again to recreate it"
+    },
+    {
+      "code": "missing-field",
+      "message": "Required value",
+      "file": "main.ct",
+      "line": 3,
+      "column": 20,
+      "resource": "Deployment \"web\"",
+      "path": "spec.template.spec.containers[0].image"
+    }
+  ]
+}
+`, got)
+}
+
+func TestRunApply_ClusterRejections(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		code     string
+		path     string
+		message  string
+		hintPart string
+	}{
+		{
+			name:     "unknown kind",
+			err:      &k8s.UnknownKindError{APIVersion: "apps/v1", Kind: "Deployment"},
+			code:     "unknown-kind",
+			message:  `the cluster does not serve kind "Deployment" in apiVersion "apps/v1"`,
+			hintPart: "install the CRD",
+		},
+		{
+			name:     "forbidden",
+			err:      apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "web", errors.New("RBAC: access denied")),
+			code:     "forbidden",
+			message:  "the cluster refused access: ",
+			hintPart: "--context",
+		},
+		{
+			name: "undeclared field from server-side apply",
+			err: apierrors.NewBadRequest("failed to create typed patch object (default/web; apps/v1, Kind=Deployment): " +
+				".spec.replcas: field not declared in schema"),
+			code:     "unknown-field",
+			path:     "spec.replcas",
+			message:  "field not declared in schema",
+			hintPart: "kubectl explain",
+		},
+		{
+			name:    "namespace missing",
+			err:     apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "ghost"),
+			code:    "namespace-not-found",
+			message: "apply failed: ",
+		},
+		{
+			name:    "anything else",
+			err:     apierrors.NewInternalError(errors.New("etcd timeout")),
+			code:    "error",
+			message: "apply failed: ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var parsed struct {
+				Errors []diag.Diagnostic `json:"errors"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(runRejectedApply(t, tt.err)), &parsed))
+			require.Len(t, parsed.Errors, 1)
+			d := parsed.Errors[0]
+			assert.Equal(t, tt.code, d.Code)
+			assert.Equal(t, `Deployment "web"`, d.Resource)
+			assert.Equal(t, "main.ct:3:20", d.Location(), "points at the registration in main.ct")
+			assert.Equal(t, tt.path, d.Path)
+			assert.Contains(t, d.Message, tt.message)
+			assert.Contains(t, d.Hint, tt.hintPart)
+		})
+	}
 }

@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/cloudticon/ct/internal/output"
 	"github.com/cloudticon/ct/pkg/diag"
 	"github.com/cloudticon/ct/pkg/k8s"
+	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type applyOpts struct {
@@ -19,7 +23,7 @@ type applyOpts struct {
 }
 
 var resolveSourceDirForApply = resolveSourceDir
-var renderResourcesForApply = renderResources
+var renderResourcesForApply = renderWithOrigins
 
 func newApplyCmd() *cobra.Command {
 	var opts applyOpts
@@ -59,7 +63,7 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 
 	opts.templateOpts.releaseName = releaseName
 	opts.templateOpts.sourceURL = remoteSourceURL(source)
-	resources, err := renderResourcesForApply(resolvedDir, opts.templateOpts)
+	resources, where, err := renderResourcesForApply(resolvedDir, opts.templateOpts)
 	if err != nil {
 		return err
 	}
@@ -76,7 +80,7 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 	}
 
 	if err := cluster.ApplyRelease(cmd.Context(), opts.namespace, releaseName, resources); err != nil {
-		return applyError(err)
+		return applyError(err, where)
 	}
 
 	if opts.outputFmt != "" {
@@ -90,18 +94,125 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 	return nil
 }
 
-// applyError turns common cluster errors into diagnostics with a next step.
-func applyError(err error) error {
+// applyError turns cluster errors into diagnostics with a next step. An
+// error tied to one object names it and points at the code that registered
+// it; field errors from the API server keep their field path.
+func applyError(err error, where origins) error {
+	var objErr *k8s.ObjectError
+	if !errors.As(err, &objErr) {
+		if d, ok := namespaceNotFound(err); ok {
+			return diag.List{d}
+		}
+		return fmt.Errorf("apply failed: %w", err)
+	}
+
+	base := diag.Diagnostic{Resource: manifest.Ref(objErr.Object)}.AtChain(where.of(objErr.Object))
+	var unknown *k8s.UnknownKindError
+	if errors.As(err, &unknown) {
+		d := base
+		d.Code = diag.CodeUnknownKind
+		d.Message = unknown.Error()
+		d.Hint = "install the CRD that defines this kind (or register it in main.ct; ct applies CRDs first), " +
+			"or fix a typo in apiVersion/kind; `kubectl api-resources` lists what the cluster serves"
+		return diag.List{d}
+	}
+	if d, ok := namespaceNotFound(err); ok {
+		d.Resource, d.File, d.Line, d.Column, d.Stack = base.Resource, base.File, base.Line, base.Column, base.Stack
+		return diag.List{d}
+	}
+	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+		d := base
+		d.Code = diag.CodeForbidden
+		d.Message = fmt.Sprintf("the cluster refused access: %s", statusMessage(objErr.Err))
+		d.Hint = "check that --context points at the cluster you mean and that its user may create and patch this kind " +
+			"in this namespace (`kubectl auth can-i patch <resource> -n <namespace> --context <context>`)"
+		return diag.List{d}
+	}
+	if list := fieldDiagnostics(objErr.Err, base); len(list) > 0 {
+		return list
+	}
+	d := base
+	d.Code = diag.CodeError
+	d.Message = fmt.Sprintf("apply failed: %s", statusMessage(objErr.Err))
+	return diag.List{d}
+}
+
+func namespaceNotFound(err error) (diag.Diagnostic, bool) {
 	var status *apierrors.StatusError
 	if errors.As(err, &status) && apierrors.IsNotFound(err) && status.ErrStatus.Details != nil &&
 		status.ErrStatus.Details.Kind == "namespaces" {
-		return diag.List{{
+		return diag.Diagnostic{
 			Code:    diag.CodeNamespaceNotFound,
-			Message: fmt.Sprintf("apply failed: %v", err),
+			Message: fmt.Sprintf("apply failed: %v", status),
 			Hint:    "pass --create-namespace, or register a Namespace object in main.ct",
-		}}
+		}, true
 	}
-	return fmt.Errorf("apply failed: %w", err)
+	return diag.Diagnostic{}, false
+}
+
+func statusMessage(err error) string {
+	var status *apierrors.StatusError
+	if errors.As(err, &status) && status.ErrStatus.Message != "" {
+		return status.ErrStatus.Message
+	}
+	return err.Error()
+}
+
+// undeclaredField matches the server-side apply error for a field the
+// object's schema doesn't have: "... .spec.replcas: field not declared in schema".
+var undeclaredField = regexp.MustCompile(`\.([A-Za-z0-9_.\[\]-]+): field not declared in schema`)
+
+// fieldDiagnostics turns an "invalid" or "bad request" answer from the API
+// server into one diagnostic per rejected field.
+func fieldDiagnostics(err error, base diag.Diagnostic) diag.List {
+	var status *apierrors.StatusError
+	if !errors.As(err, &status) || !(apierrors.IsInvalid(err) || apierrors.IsBadRequest(err)) {
+		return nil
+	}
+	var list diag.List
+	if details := status.ErrStatus.Details; details != nil {
+		for _, cause := range details.Causes {
+			if cause.Field == "" {
+				continue
+			}
+			d := base
+			d.Path = strings.TrimPrefix(cause.Field, ".")
+			d.Message = cause.Message
+			d.Code, d.Hint = fieldCode(cause.Type, cause.Message)
+			list = append(list, d)
+		}
+	}
+	if len(list) > 0 {
+		return list
+	}
+	for _, m := range undeclaredField.FindAllStringSubmatch(status.ErrStatus.Message, -1) {
+		d := base
+		d.Code = diag.CodeUnknownField
+		d.Path = m[1]
+		d.Message = "field not declared in schema"
+		d.Hint = "check the field name and nesting against the schema of this kind (`kubectl explain`)"
+		list = append(list, d)
+	}
+	if len(list) > 0 {
+		return list
+	}
+	d := base
+	d.Code = diag.CodeInvalidValue
+	d.Message = status.ErrStatus.Message
+	return diag.List{d}
+}
+
+func fieldCode(t metav1.CauseType, message string) (code, hint string) {
+	switch {
+	case strings.Contains(message, "field is immutable"):
+		return diag.CodeInvalidValue, "this field can't change on an existing object: keep the old value, " +
+			"or delete the object (or the release) and apply again to recreate it"
+	case strings.Contains(message, "field not declared in schema"):
+		return diag.CodeUnknownField, "check the field name and nesting against the schema of this kind (`kubectl explain`)"
+	case t == metav1.CauseTypeFieldValueRequired:
+		return diag.CodeMissingField, ""
+	}
+	return diag.CodeInvalidValue, ""
 }
 
 func ensureApplyNamespace(ctx context.Context, cluster k8s.Cluster, namespace string, createNamespace bool) error {

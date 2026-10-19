@@ -164,10 +164,10 @@ func Ref(res Resource) string {
 	return fmt.Sprintf("%s %q (namespace %q)", kind, name, ns)
 }
 
-// identity is the server-side identity of an object. The version is left
+// Identity is the server-side identity of an object. The version is left
 // out on purpose: apps/v1 and apps/v1beta1 Deployments with the same name are
 // the same object.
-func identity(res Resource) string {
+func Identity(res Resource) string {
 	apiVersion, _ := res["apiVersion"].(string)
 	kind, _ := res["kind"].(string)
 	meta, _ := res["metadata"].(map[string]interface{})
@@ -197,7 +197,7 @@ func FindDuplicates(resources []Resource) []Duplicate {
 		if name, _ := meta["name"].(string); name == "" {
 			continue // nameless objects (generateName) are reported by validation
 		}
-		key := identity(res)
+		key := Identity(res)
 		f, ok := first[key]
 		if !ok {
 			first[key] = i

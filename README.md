@@ -290,7 +290,7 @@ Error: lib/factory.ct:3:10: Error: name is required [runtime]
     at main.ct:4:5
 ```
 
-With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `invalid-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`, `namespace-not-found`, `invalid-input`, `values`, or `error` for anything else):
+With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `invalid-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`, `namespace-not-found`, `forbidden`, `invalid-input`, `values`, or `error` for anything else):
 
 ```json
 {
@@ -362,6 +362,18 @@ ct delete my-app -n production   # deletes what the inventory tracks; no source 
 ```
 
 `ct apply` uses server-side apply (field manager `ct`) in Helm's install order. Custom resources wait until the API server serves a CRD applied in the same run. Each release keeps an inventory in the ConfigMap `ct-inventory-<release>` (labels `app.kubernetes.io/managed-by=ct`, `ct.cloudticon.com/instance=<release>`); objects that disappear from the code are pruned on the next apply, including objects created by an apply that failed halfway.
+
+When the cluster rejects an object, the error names the object and points at the line in your code that registered it, like a validation error:
+
+- a field the API server refuses (an immutable field changed, a value its admission rejects, a field the CRD schema doesn't declare) gives one diagnostic per field with its path (`invalid-value`, `missing-field`, `unknown-field`);
+- a kind the cluster doesn't serve gives `unknown-kind` with a hint about the missing CRD;
+- a kubeconfig user without access gives `forbidden` with a hint to check `--context` and RBAC.
+
+```
+$ ct apply web . -n prod --context kind-ct-test --set app=web2
+Error: main.ct:3:20: Deployment "web" (namespace "prod"): spec.selector: Invalid value: {"matchLabels":{"app":"web2"}}: field is immutable [invalid-value]
+  hint: this field can't change on an existing object: keep the old value, or delete the object (or the release) and apply again to recreate it
+```
 
 ## Development mode — `ct dev`
 

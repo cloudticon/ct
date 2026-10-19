@@ -26,6 +26,9 @@ const (
 	CodeInvalidValue      = "invalid-value"
 	CodeMissingField      = "missing-field"
 	CodeNamespaceNotFound = "namespace-not-found"
+	// CodeForbidden: the cluster refused the kubeconfig user (RBAC or
+	// credentials) when applying an object.
+	CodeForbidden = "forbidden"
 	// CodeInvalidInput is what packages use (by convention, see README) to
 	// reject the input of a factory call.
 	CodeInvalidInput = "invalid-input"

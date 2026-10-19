@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"github.com/cloudticon/ct/pkg/manifest"
 	"github.com/fatih/color"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -69,6 +71,10 @@ func (c *client) applyOne(ctx context.Context, res Resource, newKinds map[string
 		info, err = c.waitForKind(ctx, obj.GetAPIVersion(), obj.GetKind())
 	}
 	if err != nil {
+		var unknown *UnknownKindError
+		if errors.As(err, &unknown) {
+			return &ObjectError{Object: res, Err: err}
+		}
 		return fmt.Errorf("resolving resource info for %s %s: %w", obj.GetAPIVersion(), obj.GetKind(), err)
 	}
 
@@ -94,7 +100,7 @@ func (c *client) applyOne(ctx context.Context, res Resource, newKinds map[string
 		Force:        &force,
 	})
 	if err != nil {
-		return fmt.Errorf("applying %s %q: %w", obj.GetKind(), obj.GetName(), err)
+		return &ObjectError{Object: res, Err: err}
 	}
 
 	log.Printf("%s %s/%s", color.GreenString("applied"), obj.GetKind(), obj.GetName())
@@ -134,6 +140,9 @@ func (c *client) resolveResourceInfo(apiVersion, kind string) (*resourceInfo, er
 	}
 
 	resourceList, err := c.Discovery.ServerResourcesForGroupVersion(apiVersion)
+	if apierrors.IsNotFound(err) {
+		return nil, &UnknownKindError{APIVersion: apiVersion, Kind: kind, GroupVersionMissing: true}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("discovering resources for %s: %w", apiVersion, err)
 	}
@@ -153,5 +162,5 @@ func (c *client) resolveResourceInfo(apiVersion, kind string) (*resourceInfo, er
 		}
 	}
 
-	return nil, fmt.Errorf("kind %q not found in apiVersion %q", kind, apiVersion)
+	return nil, &UnknownKindError{APIVersion: apiVersion, Kind: kind}
 }

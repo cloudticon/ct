@@ -90,14 +90,33 @@ func runTemplate(cmd *cobra.Command, releaseName, sourceDir string, opts templat
 }
 
 func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
+	resources, _, err := renderWithOrigins(dir, opts)
+	return resources, err
+}
+
+// origins maps an object's server-side identity to the call chain in the
+// user's code that registered it, so errors found later (on apply) can still
+// point at main.ct.
+type origins map[string][]diag.Frame
+
+func (o origins) of(res engine.Resource) []diag.Frame {
+	if o == nil || res == nil {
+		return nil
+	}
+	return o[manifest.Identity(res)]
+}
+
+// renderWithOrigins is renderResources that also returns where each object
+// was registered.
+func renderWithOrigins(dir string, opts templateOpts) ([]engine.Resource, origins, error) {
 	entryPoint := filepath.Join(dir, "main.ct")
 	if _, err := os.Stat(entryPoint); os.IsNotExist(err) {
-		return nil, fmt.Errorf("entry point not found: %s", entryPoint)
+		return nil, nil, fmt.Errorf("entry point not found: %s", entryPoint)
 	}
 
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, fmt.Errorf("resolving project directory: %w", err)
+		return nil, nil, fmt.Errorf("resolving project directory: %w", err)
 	}
 	tr := engine.NewTranspiler(absDir)
 	tr.RefreshPackages = opts.noCache
@@ -107,7 +126,7 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 
 	valuesFiles := resolveValuesFiles(dir, opts.valuesFiles)
 	if err := checkValuesFilesExist(dir, valuesFiles); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	values, err := engine.LoadValues(engine.ValuesOpts{
 		Files:     valuesFiles,
@@ -115,12 +134,12 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 		SetString: opts.setStringValues,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	jsCode, err := tr.Bundle(entryPoint)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	result, err := engine.Render(engine.ExecuteOpts{
@@ -135,7 +154,7 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 	if err != nil {
 		var dups diag.List
 		if result == nil || !errors.As(err, &dups) {
-			return nil, err
+			return nil, nil, err
 		}
 		problems = append(problems, dups...)
 	}
@@ -143,11 +162,17 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 		problems = append(problems, validate.Resources(result.Resources, result.Origin)...)
 	}
 	if len(problems) > 0 {
-		return nil, problems
+		return nil, nil, problems
 	}
 	resources := result.Resources
+	where := make(origins, len(resources))
+	for i, res := range resources {
+		if o := result.Origin(i); o != nil {
+			where[manifest.Identity(res)] = o
+		}
+	}
 	manifest.SortForApply(resources)
-	return resources, nil
+	return resources, where, nil
 }
 
 // validateReleaseName enforces what the release name ends up in: a label
