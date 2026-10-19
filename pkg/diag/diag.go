@@ -29,6 +29,7 @@ const (
 	// CodeInvalidInput is what packages use (by convention, see README) to
 	// reject the input of a factory call.
 	CodeInvalidInput = "invalid-input"
+	CodeValues       = "values" // bad values file or --set override
 )
 
 // Frame is a position in a .ct/.ts source file.

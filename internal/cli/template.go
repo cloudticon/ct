@@ -105,8 +105,12 @@ func renderResources(dir string, opts templateOpts) ([]engine.Resource, error) {
 		tr.MarkFresh(opts.sourceURL) // resolveSourceDir already re-downloaded it
 	}
 
+	valuesFiles := resolveValuesFiles(dir, opts.valuesFiles)
+	if err := checkValuesFilesExist(dir, valuesFiles); err != nil {
+		return nil, err
+	}
 	values, err := engine.LoadValues(engine.ValuesOpts{
-		Files:     resolveValuesFiles(dir, opts.valuesFiles),
+		Files:     valuesFiles,
 		Set:       opts.setValues,
 		SetString: opts.setStringValues,
 	})
@@ -226,4 +230,46 @@ func toOutputResources(resources []engine.Resource) []output.Resource {
 		result[i] = output.Resource(r)
 	}
 	return result
+}
+
+// checkValuesFilesExist reports a values file that does not exist, with the
+// values files the project does have as a hint.
+func checkValuesFilesExist(dir string, files []string) error {
+	var problems diag.List
+	for _, f := range files {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			continue
+		}
+		d := diag.Diagnostic{Code: diag.CodeValues, Message: "values file not found", File: f}
+		if found := projectValuesFiles(dir); len(found) > 0 {
+			d.Hint = "values files in the project: " + strings.Join(found, ", ")
+		} else {
+			d.Hint = "the project has no values files (values.json, values.yaml, values-*.yaml)"
+		}
+		problems = append(problems, d)
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return problems
+}
+
+// projectValuesFiles lists values*.json|yaml|yml in dir, sorted by name.
+func projectValuesFiles(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, "values") {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".json", ".yaml", ".yml":
+			names = append(names, name)
+		}
+	}
+	return names
 }

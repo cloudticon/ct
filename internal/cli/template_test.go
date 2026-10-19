@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"github.com/cloudticon/ct/pkg/diag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,4 +89,17 @@ func TestTemplateCmd_NoCacheFlagDefault(t *testing.T) {
 	noCache, err := cmd.Flags().GetBool("no-cache")
 	require.NoError(t, err)
 	assert.False(t, noCache)
+}
+
+func TestCheckValuesFilesExist_HintListsProjectFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "values.yaml"), []byte(`{}`), 0644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "values-dev.json"), []byte(`{}`), 0644))
+
+	err := checkValuesFilesExist(dir, []string{filepath.Join(dir, "values-prod.json")})
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeValues, list[0].Code)
+	assert.Equal(t, filepath.Join(dir, "values-prod.json"), list[0].File)
+	assert.Equal(t, "values files in the project: values-dev.json, values.yaml", list[0].Hint)
 }

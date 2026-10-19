@@ -1,8 +1,12 @@
 {
   "errors": [
     {
-      "code": "error",
-      "message": "parsing YAML values from testdata/diag/values-file-error/values.yaml: yaml: line 1: did not find expected ',' or ']'"
+      "code": "values",
+      "message": "invalid YAML: did not find expected ',' or ']'",
+      "file": "testdata/diag/values-file-error/values.yaml",
+      "line": 1,
+      "lineText": "replicas: [1, 2",
+      "hint": "check indentation: YAML uses spaces (no tabs) and nested keys are indented under their parent"
     }
   ]
 }

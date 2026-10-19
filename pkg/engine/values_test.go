@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"github.com/cloudticon/ct/pkg/diag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -274,4 +275,38 @@ func TestLoadValues_SetRejectsEmptyKeySegments(t *testing.T) {
 		_, err := engine.LoadValues(engine.ValuesOpts{Set: []string{bad}})
 		assert.Error(t, err, bad)
 	}
+}
+
+func TestLoadValues_JSONSyntaxErrorHasPosition(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "values-bad.json")
+	require.NoError(t, os.WriteFile(f, []byte("{\n  \"a\": 1,\n}\n"), 0644))
+	_, err := engine.LoadValues(engine.ValuesOpts{Files: []string{f}})
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 1)
+	assert.Equal(t, diag.CodeValues, list[0].Code)
+	assert.Equal(t, f, list[0].File)
+	assert.Equal(t, 3, list[0].Line)
+	assert.Equal(t, 1, list[0].Column)
+	assert.Equal(t, "}", list[0].LineText)
+}
+
+func TestLoadValues_YAMLIndentErrorHasLine(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "values.yaml")
+	require.NoError(t, os.WriteFile(f, []byte("app:\n  name: web\n   image: x\n"), 0644))
+	_, err := engine.LoadValues(engine.ValuesOpts{Files: []string{f}})
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeValues, list[0].Code)
+	assert.Equal(t, f, list[0].File)
+	assert.Equal(t, 3, list[0].Line)
+	assert.Equal(t, "   image: x", list[0].LineText)
+}
+
+func TestLoadValues_SetWithoutEqualsHasExample(t *testing.T) {
+	_, err := engine.LoadValues(engine.ValuesOpts{Set: []string{"replicas"}})
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	assert.Equal(t, diag.CodeValues, list[0].Code)
+	assert.Contains(t, list[0].Hint, "--set replicas=3")
 }
