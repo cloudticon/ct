@@ -613,3 +613,40 @@ func asMap(t *testing.T, v interface{}) map[string]interface{} {
 	require.Truef(t, ok, "expected map, got %T (%v)", v, v)
 	return m
 }
+
+func TestTemplateE2E_UnknownValuesKeyFailsWithPosition(t *testing.T) {
+	dir := writeProject(t, `const replicas = Values.replicsa;
+__ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: "cfg" }, data: { r: String(replicas) } });
+`, map[string]string{"values.json": `{"replicas": 2}`})
+
+	_, _, err := runTemplateE2E(t, "demo", dir)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 1)
+	assert.Equal(t, diag.CodeUnknownValuesKey, list[0].Code)
+	assert.Equal(t, "main.ct:1:24", list[0].Location())
+	assert.Equal(t, "replicsa", list[0].Path)
+	assert.Contains(t, list[0].String(), "did you mean Values.replicas?")
+}
+
+func TestTemplateE2E_PackagesMayProbeOptionalKeysOfValuesObjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	lib := filepath.Join(home, ".ct", "cache", "github.com", "acme", "lib@v1")
+	require.NoError(t, os.MkdirAll(lib, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(lib, "index.ts"), []byte(`
+export function app(args: any) {
+  __ct_resources.push({ apiVersion: "v1", kind: "ConfigMap", metadata: { name: args.name }, data: { probes: String(args.probes ?? "none") } });
+}
+`), 0o644))
+	dir := writeProject(t, `import { app } from "github.com/acme/lib@v1";
+
+app(Values.app);
+`, map[string]string{"values.json": `{"app": {"name": "web"}}`})
+
+	stdout, _, err := runTemplateE2E(t, "demo", dir)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "probes: none")
+}

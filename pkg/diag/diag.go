@@ -33,7 +33,10 @@ const (
 	// reject the input of a factory call.
 	CodeInvalidInput = "invalid-input"
 	CodeValues       = "values" // bad values file or --set override
-	CodeUsage        = "usage"  // ct was called wrongly: arguments, flags, command
+	// CodeUnknownValuesKey: the code read a Values key that no values file
+	// or --set declares (optional keys are declared as null).
+	CodeUnknownValuesKey = "unknown-values-key"
+	CodeUsage            = "usage" // ct was called wrongly: arguments, flags, command
 )
 
 // Frame is a position in a .ct/.ts source file.

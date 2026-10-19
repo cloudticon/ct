@@ -1,8 +1,10 @@
 package scaffold_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/cloudticon/ct/internal/scaffold"
@@ -116,4 +118,25 @@ func TestInit_KeepsAnExistingAgentsMd(t *testing.T) {
 	require.NoError(t, err)
 	content, _ := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
 	assert.Equal(t, "# repo rules", string(content), "--force never overwrites AGENTS.md")
+}
+
+// Reading a Values key that no values file declares fails the render, so the
+// starter main.ct may only read keys its values.json declares.
+func TestInit_MainCtReadsOnlyDeclaredValues(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "project")
+	_, err := scaffold.Init(dir, scaffold.Options{})
+	require.NoError(t, err)
+
+	mainCt, err := os.ReadFile(filepath.Join(dir, "main.ct"))
+	require.NoError(t, err)
+	raw, err := os.ReadFile(filepath.Join(dir, "values.json"))
+	require.NoError(t, err)
+	var values map[string]interface{}
+	require.NoError(t, json.Unmarshal(raw, &values))
+
+	reads := regexp.MustCompile(`Values\.(\w+)`).FindAllStringSubmatch(string(mainCt), -1)
+	require.NotEmpty(t, reads)
+	for _, m := range reads {
+		assert.Contains(t, values, m[1], "main.ct reads Values.%s, which values.json does not declare", m[1])
+	}
 }

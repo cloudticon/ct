@@ -54,6 +54,9 @@ read in code as ` + "`Values.<key>`" + `.
 - Prefer factories from github.com/cloudticon/k8s-factories (` + "`webApp`" + `, ...);
   use primitives from github.com/cloudticon/k8s for other objects.
 - Each object needs a unique kind + name + namespace.
+- Reading a ` + "`Values`" + ` key that no values file declares is an error
+  (` + "`unknown-values-key`" + `). Declare optional keys as ` + "`null`" + ` and read them
+  with ` + "`?.`" + ` or ` + "`??`" + `.
 - Run ` + "`ct template`" + ` after every change; it validates against the
   Kubernetes API schema before anything reaches a cluster.
 `

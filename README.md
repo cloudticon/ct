@@ -85,6 +85,8 @@ deployment({
 });
 ```
 
+The optional `env` is declared in the values file as `"env": null` (or a map): `ct` fails on a read of a key no values file declares, so a typo like `Values.replicsa` can't fall back to a default.
+
 Helm renders whatever text the template produces, so a mismatched selector, a misindented block or a 16-character port name surfaces when the cluster (or Argo CD) rejects the object. `ct` reports it at render time, with the line in `main.ct` that caused it — see [Validation and errors](#validation-and-errors).
 
 ### And the others?
@@ -187,6 +189,7 @@ service({
   ports: [{ port: 80, targetPort: "http" }],
 });
 
+// values.json declares the optional key: "logLevel": null
 configMap({ name: "web-config", data: { LOG_LEVEL: Values.logLevel ?? "info" } });
 ```
 
@@ -216,6 +219,8 @@ export function worker(w: { name: string; queue: string; replicas?: number }) {
 // main.ct
 import { worker } from "./lib/worker";   // .ct/.ts extensions are optional
 
+// values.json: "workers": [{ "name": "mail", "queue": "mail", "replicas": null }]
+// (every entry declares replicas, null when the default is fine)
 for (const w of Values.workers) worker(w);
 ```
 
@@ -230,6 +235,7 @@ const redis = resource("redis.redis.opstreelabs.in/v1beta2", "Redis", {
   spec: { kubernetesConfig: z.object({ image: z.string() }) },
 });
 
+// values.json: "redis": null, or "redis": { "enabled": true }
 if (Values.redis?.enabled) {
   redis({ name: "cache", kubernetesConfig: { image: "redis:7.2" } });
 }
@@ -246,7 +252,7 @@ if (Values.redis?.enabled) {
 
 | Global | Value |
 | --- | --- |
-| `Values` | merged values (files + `--set`) |
+| `Values` | merged values (files + `--set`); reading a key none of them declares is an error |
 | `Release.name` | the release name given to `ct template`/`ct apply` |
 | `Release.namespace` | the `-n` namespace (empty if not set) |
 
@@ -255,6 +261,8 @@ if (Values.redis?.enabled) {
 - **Layers, lowest first:** the project's values file (the first of `values.json`, `values.yaml`, `values.yml`) is always the base; each `-f` file is merged on top in the order given; `--set` and `--set-string` come last. A base file that is also passed with `-f` is not loaded twice.
 - **Breaking change (beta.2):** a single `-f` used to replace the project's values file; now it only overrides it. Put just the overrides in `-f` files. There is no flag to drop the base.
 - `-f` is repeatable. Files deep-merge left to right: objects merge key by key, everything else (including arrays) is replaced, like Helm. A relative `-f` that isn't in the working directory is looked up in the project, so remote sources can use their own `values-prod.yaml`.
+- **Only declared keys can be read.** Reading `Values.x` (or `Values.a.x`) when no values file and no `--set` declares `x` stops the render with an `unknown-values-key` diagnostic at the line of the read, the full key path and the closest known key (`did you mean Values.replicas?`). Declare an optional key as `null` and read it with `?.` or `??`. Iterating, `Object.keys`, spread, `in` and `JSON.stringify` never fail. Imported packages may probe optional keys of a values object you pass them; only reads in your project are checked.
+- **Breaking change (beta.2):** `Values.x ?? default` without `x` in a values file used to give the default; now it is an error. Add `"x": null` to the values file.
 - `--set key.nested=value` overrides one value. `true`/`false`/`null` and numbers are typed, but only when the number round-trips: `1.10`, `1.0` and `0123` stay strings. `--set-string` always sets a string. Escape dots in keys with a backslash: `--set 'annotations.nginx\.ingress\.kubernetes\.io/rewrite-target=/'`.
 
 ```bash
@@ -290,7 +298,7 @@ Error: lib/factory.ct:3:10: Error: name is required [runtime]
     at main.ct:4:5
 ```
 
-With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `invalid-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`, `namespace-not-found`, `forbidden`, `invalid-input`, `values`, or `error` for anything else):
+With `--error-format json`, errors go to stderr as JSON with stable codes (`syntax`, `import`, `async-not-supported`, `runtime`, `timeout`, `duplicate-resource`, `invalid-resource`, `unknown-kind`, `unknown-field`, `invalid-value`, `missing-field`, `namespace-not-found`, `forbidden`, `invalid-input`, `values`, `unknown-values-key`, or `error` for anything else):
 
 ```json
 {

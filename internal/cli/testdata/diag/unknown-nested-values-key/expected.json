@@ -1,0 +1,20 @@
+{
+  "errors": [
+    {
+      "code": "unknown-values-key",
+      "message": "no key \"tagg\" in Values.image",
+      "file": "main.ct",
+      "line": 5,
+      "column": 60,
+      "path": "image.tagg",
+      "hint": "did you mean Values.image.tag? If image.tagg is a new key, add image.tagg to the values file or pass --set image.tagg=<value>; for an optional key write null in the values file and read it with ?. or ??",
+      "stack": [
+        {
+          "file": "main.ct",
+          "line": 5,
+          "column": 60
+        }
+      ]
+    }
+  ]
+}

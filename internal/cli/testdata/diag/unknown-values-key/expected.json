@@ -1,0 +1,20 @@
+{
+  "errors": [
+    {
+      "code": "unknown-values-key",
+      "message": "no key \"replicsa\" in Values",
+      "file": "main.ct",
+      "line": 5,
+      "column": 34,
+      "path": "replicsa",
+      "hint": "did you mean Values.replicas? If replicsa is a new key, add replicsa to the values file or pass --set replicsa=<value>; for an optional key write null in the values file and read it with ?. or ??",
+      "stack": [
+        {
+          "file": "main.ct",
+          "line": 5,
+          "column": 34
+        }
+      ]
+    }
+  ]
+}

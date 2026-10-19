@@ -143,7 +143,7 @@ func injectGlobals(vm *goja.Runtime, opts ExecuteOpts) *[][]diag.Frame {
 	if values == nil {
 		values = map[string]interface{}{}
 	}
-	h.DefineValue("Values", values)
+	h.DefineValue("Values", newValuesGuard(vm, values, opts.SourceDir))
 	h.DefineValue("Release", map[string]interface{}{
 		"name":      opts.ReleaseName,
 		"namespace": opts.Namespace,
@@ -268,7 +268,7 @@ func runtimeDiagnostics(err error, sourceDir string) error {
 			d.Code, d.Path, d.Message = code, path, msg
 			d.Hint = hint
 		} else if strings.Contains(d.Message, "of undefined") || strings.Contains(d.Message, "of null") {
-			d.Hint = "something on that line is undefined; missing Values keys are a common cause: add them to values.json/values.yaml or pass --set, and use ?. for optional ones"
+			d.Hint = "something on that line is undefined or null; optional Values keys (declared as null) are a common cause: read them with ?. or ??"
 		}
 		return diag.List{d.At(userFrame(frames))}
 	}
@@ -347,7 +347,7 @@ func extractResources(vm *goja.Runtime) ([]Resource, error) {
 
 	resources := make([]Resource, 0, len(arr))
 	for i, item := range arr {
-		res, ok := item.(map[string]interface{})
+		res, ok := unwrapProxy(item).(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("resource at index %d is not an object", i)
 		}
@@ -367,7 +367,7 @@ func extractResources(vm *goja.Runtime) ([]Resource, error) {
 // copyValue deep-copies maps and slices, rejecting cycles (which can't be
 // rendered as YAML/JSON anyway).
 func copyValue(v interface{}, onPath map[uintptr]bool) (interface{}, error) {
-	switch val := v.(type) {
+	switch val := unwrapProxy(v).(type) {
 	case map[string]interface{}:
 		id := reflect.ValueOf(val).Pointer()
 		if onPath[id] {
@@ -395,6 +395,22 @@ func copyValue(v interface{}, onPath map[uintptr]bool) (interface{}, error) {
 		}
 		return out, nil
 	default:
-		return v, nil
+		return val, nil
+	}
+}
+
+// unwrapProxy turns an exported JS Proxy (Values objects are proxies, see
+// valuesGuard) into the exported value of its target.
+func unwrapProxy(v interface{}) interface{} {
+	for {
+		p, ok := v.(goja.Proxy)
+		if !ok {
+			return v
+		}
+		t := p.Target()
+		if t == nil {
+			return nil
+		}
+		v = t.Export()
 	}
 }

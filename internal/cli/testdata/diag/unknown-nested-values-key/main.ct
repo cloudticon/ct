@@ -1,0 +1,6 @@
+__ct_resources.push({
+  apiVersion: "v1",
+  kind: "ConfigMap",
+  metadata: { name: "cfg" },
+  data: { image: `${Values.image.repository}:${Values.image.tagg}` },
+});
