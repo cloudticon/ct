@@ -10,7 +10,7 @@
 `ct` replaces Helm with real code and fast, precise feedback. You describe a release in TypeScript (`main.ct`), and `ct` renders it, **validates every object against the Kubernetes API before anything reaches a cluster**, and applies it with inventory-based pruning. Every error points at the line of your code that caused it, in plain text or JSON. That tight loop is what humans and AI coding agents both need.
 
 ```bash
-ct init                         # main.ct, values.json, AGENTS.md
+ct init                         # main.ct, values.json, AGENTS.md, CLAUDE.md
 ct check                        # render + validate the base and every values-*.yaml
 ct template my-app . -n prod    # render + validate -> YAML
 ct apply my-app . -n prod       # render + validate + server-side apply + prune
@@ -142,7 +142,8 @@ After `ct init`:
 myproject/
   main.ct        # the release, in TypeScript
   values.json    # settings, read as Values.<key>
-  AGENTS.md      # how coding agents should work on this project
+  AGENTS.md      # how coding agents should work on this project (work loop, cache path, codes)
+  CLAUDE.md      # one line: @AGENTS.md (Claude Code reads CLAUDE.md, not AGENTS.md)
 ```
 
 No `tsconfig.json`, no generated directories, no `node_modules`.
@@ -530,7 +531,7 @@ Global flags:
 
 ct init [dir] [flags]
   -d, --dir string            project directory (default ".")
-      --force                 overwrite an existing main.ct and values.json (AGENTS.md is never overwritten)
+      --force                 overwrite an existing main.ct and values.json (AGENTS.md and CLAUDE.md are never overwritten)
 
 ct template <name> <dir|repo> [flags]
   -n, --namespace string      default namespace for resources

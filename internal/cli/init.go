@@ -15,7 +15,7 @@ func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "init [dir]",
 		Short:   "Initialize a new ct project",
-		Long:    "Creates main.ct, values.json and AGENTS.md (instructions for AI coding agents) in the target directory. An existing main.ct or values.json is kept unless --force is given; an existing AGENTS.md is always kept.",
+		Long:    "Creates main.ct, values.json, AGENTS.md (instructions for AI coding agents) and CLAUDE.md (imports AGENTS.md) in the target directory. An existing main.ct or values.json is kept unless --force is given; an existing AGENTS.md or CLAUDE.md is always kept.",
 		Example: "ct init my-app",
 		Args:    usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -30,7 +30,7 @@ func newInitCmd() *cobra.Command {
 				return fmt.Errorf("init failed: %w", err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Initialized ct project in %s/ (%s)\n", strings.TrimSuffix(dir, "/"), strings.Join(written, ", "))
-			fmt.Fprintf(cmd.OutOrStdout(), "Next: ct template my-app %s -n default\n", dir)
+			fmt.Fprintf(cmd.OutOrStdout(), "Next: ct check %s\n", dir)
 			return nil
 		},
 	}

@@ -70,3 +70,15 @@ func TestInitCmd_DirectoryArgument(t *testing.T) {
 	require.NoError(t, cmd.Execute())
 	assert.FileExists(t, filepath.Join(projectDir, "main.ct"))
 }
+
+func TestInitCmd_ReportsFilesAndNextStep(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "p")
+	cmd := newInitCmd()
+	cmd.SetArgs([]string{dir})
+	buf := new(bytes.Buffer)
+	cmd.SetOut(buf)
+	require.NoError(t, cmd.Execute())
+
+	assert.Contains(t, buf.String(), "main.ct, values.json, AGENTS.md, CLAUDE.md")
+	assert.Contains(t, buf.String(), "Next: ct check "+dir)
+}
