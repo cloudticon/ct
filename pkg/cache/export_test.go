@@ -6,3 +6,8 @@ func SetCloneFunc(fn func(ref *PackageRef, dir string) error) func() {
 	cloneFn = fn
 	return func() { cloneFn = old }
 }
+
+// CloneFailureReason exposes the git output classifier to tests.
+func CloneFailureReason(ref *PackageRef, dir, out string, err error) string {
+	return cloneFailureReason(ref, dir, out, err)
+}

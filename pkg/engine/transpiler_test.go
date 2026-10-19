@@ -559,3 +559,30 @@ export function webApp(opts: any) {
 	assert.Contains(t, strings.Join(files, " "), "github.com/acme/infra@v1/lib/web.ts", "package frame stays in the stack")
 	assert.Contains(t, strings.Join(files, " "), "main.ct", "project frame is in the stack")
 }
+
+func TestBundle_MissingExportNamesPackageAndSuggests(t *testing.T) {
+	pkgDir := setupFakeCache(t, "github.com", "acme", "factories", "master")
+	writeTS(t, pkgDir, "index.ct", `export * from "./web";
+export const dbApp = 1;`)
+	writeTS(t, pkgDir, "web.ct", `export const webApp = 1;`)
+
+	dir := t.TempDir()
+	entry := filepath.Join(dir, "main.ct")
+	require.NoError(t, os.WriteFile(entry, []byte(`import { webbApp } from "github.com/acme/factories@master";
+console.log(webbApp);
+`), 0o644))
+
+	_, err := engine.NewTranspiler(dir).Bundle(entry)
+
+	var list diag.List
+	require.ErrorAs(t, err, &list)
+	require.Len(t, list, 1)
+	d := list[0]
+	assert.Equal(t, diag.CodeImport, d.Code)
+	assert.Equal(t, `package github.com/acme/factories@master has no export "webbApp"`, d.Message)
+	assert.NotContains(t, d.Message, ".ct/cache")
+	assert.Contains(t, d.Hint, `did you mean "webApp"?`)
+	assert.Contains(t, d.Hint, "exports: dbApp, webApp")
+	assert.Equal(t, "main.ct", d.File)
+	assert.Equal(t, 1, d.Line)
+}

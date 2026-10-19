@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,6 +91,16 @@ func packageDir(ref *PackageRef) (string, error) {
 	return dir, nil
 }
 
+// Display is the package address as users write it in imports, without the
+// scheme: github.com/owner/repo@version.
+func (r *PackageRef) Display() string {
+	s := path.Join(r.Host, r.Owner, r.Repo)
+	if r.Version != "" {
+		s += "@" + r.Version
+	}
+	return s
+}
+
 func (r *PackageRef) GitURL() string {
 	return "https://" + path.Join(r.Host, r.Owner, r.Repo) + ".git"
 }
@@ -120,7 +131,7 @@ func Resolve(rawURL string) (string, error) {
 	}
 
 	if err := download(ref, pkgDir); err != nil {
-		return "", fmt.Errorf("downloading %s: %w", rawURL, err)
+		return "", fmt.Errorf("cannot download package %s: %w", ref.Display(), err)
 	}
 
 	return pkgDir, nil
@@ -153,9 +164,41 @@ var cloneFn = func(ref *PackageRef, dir string) error {
 	// (CI, AI agents); credential helpers still work.
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git clone %s: %s: %w", ref.GitURL(), strings.TrimSpace(string(out)), err)
+		return errors.New(cloneFailureReason(ref, dir, string(out), err))
 	}
 	return nil
+}
+
+// cloneFailureReason turns git's multi-line output (which names temporary
+// directories) into a one-line cause: no such repository, no such version or
+// no access.
+func cloneFailureReason(ref *PackageRef, dir, out string, err error) string {
+	low := strings.ToLower(out)
+	switch {
+	case strings.Contains(low, "remote branch") && strings.Contains(low, "not found"):
+		return fmt.Sprintf("version %q not found: the repository exists but has no tag or branch with that name", ref.Version)
+	case strings.Contains(low, "could not resolve host"):
+		return fmt.Sprintf("host %s is unreachable", ref.Host)
+	case strings.Contains(low, "authentication failed"),
+		strings.Contains(low, "could not read username"),
+		strings.Contains(low, "permission denied"),
+		strings.Contains(low, "access denied"),
+		strings.Contains(low, "error: 403"):
+		return "repository not found or access denied (check the name; private repositories need git credentials for https, e.g. `gh auth setup-git`)"
+	case strings.Contains(low, "not found"), strings.Contains(low, "does not exist"):
+		return "repository not found (check the owner and repository name)"
+	}
+	last := ""
+	for _, line := range strings.Split(out, "\n") {
+		if l := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "fatal:")); l != "" {
+			last = l
+		}
+	}
+	if last == "" {
+		last = err.Error()
+	}
+	last = strings.ReplaceAll(last, dir, "the cache")
+	return strings.Join(strings.Fields(last), " ")
 }
 
 // download clones into a temporary sibling of destDir and renames it into

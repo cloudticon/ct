@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -77,7 +79,7 @@ func (t *Transpiler) Bundle(entryPoint string) (string, error) {
 	})
 
 	if len(result.Errors) > 0 {
-		return "", bundleDiagnostics(result.Errors, baseDir)
+		return "", t.bundleDiagnostics(result.Errors, baseDir)
 	}
 	if len(result.OutputFiles) == 0 {
 		return "", diag.Errorf(diag.CodeSyntax, "esbuild produced no output for %s", entryPoint)
@@ -227,7 +229,7 @@ func resolveIndex(dir string) string {
 	return filepath.Join(dir, "index.ts")
 }
 
-func bundleDiagnostics(msgs []api.Message, baseDir string) diag.List {
+func (t *Transpiler) bundleDiagnostics(msgs []api.Message, baseDir string) diag.List {
 	list := make(diag.List, 0, len(msgs))
 	for _, m := range msgs {
 		d := diag.Diagnostic{Code: diag.CodeSyntax, Message: m.Text}
@@ -237,7 +239,9 @@ func bundleDiagnostics(msgs []api.Message, baseDir string) diag.List {
 			d.Hint = "rendering is synchronous; call functions directly and drop async/await"
 		case m.PluginName == "url-resolver":
 			d.Code = diag.CodeImport
-			d.Hint = "check the package URL and version (github.com/<owner>/<repo>@<tag-or-branch>); private repositories need git credentials for https, e.g. `gh auth setup-git`"
+			d.Hint = "package addresses look like github.com/<owner>/<repo>@<tag-or-branch>"
+		case noExportRe.MatchString(m.Text):
+			d = t.missingExportDiagnostic(m.Text, baseDir)
 		case strings.HasPrefix(m.Text, "Could not resolve"):
 			d.Code = diag.CodeImport
 			d.Hint = importHint(m.Text)
@@ -290,4 +294,131 @@ func DisplayPath(path, baseDir string) string {
 		}
 	}
 	return abs
+}
+
+var noExportRe = regexp.MustCompile(`^No matching export in "(.*)" for import "(.*)"$`)
+
+// missingExportDiagnostic rewrites esbuild's "No matching export" (which
+// names the file in the cache and carries the code "syntax") into an import
+// diagnostic that names the package, suggests the closest export and lists
+// what the module exports.
+func (t *Transpiler) missingExportDiagnostic(text, baseDir string) diag.Diagnostic {
+	m := noExportRe.FindStringSubmatch(text)
+	file, name := m[1], m[2]
+	if !filepath.IsAbs(file) {
+		file = filepath.Join(baseDir, file)
+	}
+	where := DisplayPath(file, baseDir)
+	inCache := false
+	if cacheDir, err := cache.CacheDir(); err == nil {
+		if rel, err := filepath.Rel(cacheDir, file); err == nil && !strings.HasPrefix(rel, "..") {
+			inCache = true
+		}
+	}
+	if inCache {
+		where = packageAddress(where)
+	}
+
+	d := diag.Diagnostic{Code: diag.CodeImport}
+	if inCache {
+		d.Message = fmt.Sprintf("package %s has no export %q", where, name)
+	} else {
+		d.Message = fmt.Sprintf("%s has no export %q", where, name)
+	}
+	exports := t.moduleExports(file)
+	if len(exports) == 0 {
+		d.Hint = "the module exports nothing by that name; check the import against the package's index file"
+		return d
+	}
+	if best := closestName(name, exports); best != "" {
+		d.Hint = fmt.Sprintf("did you mean %q? ", best)
+	}
+	d.Hint += "exports: " + strings.Join(exports, ", ")
+	return d
+}
+
+// packageAddress cuts a cache-relative path down to the package:
+// "github.com/o/r@v1/lib/x.ts" becomes "github.com/o/r@v1".
+func packageAddress(rel string) string {
+	parts := strings.Split(rel, "/")
+	for i, p := range parts {
+		if strings.Contains(p, "@") {
+			return strings.Join(parts[:i+1], "/")
+		}
+	}
+	return rel
+}
+
+// moduleExports lists the names a module exports (following re-exports) by
+// bundling it once more as an ES module and reading esbuild's metafile.
+func (t *Transpiler) moduleExports(file string) []string {
+	res := api.Build(api.BuildOptions{
+		EntryPoints:       []string{file},
+		AbsWorkingDir:     filepath.Dir(file),
+		Bundle:            true,
+		Format:            api.FormatESModule,
+		Platform:          api.PlatformNeutral,
+		Write:             false,
+		Metafile:          true,
+		LogLevel:          api.LogLevelSilent,
+		ResolveExtensions: []string{".ts", ".ct", ".tsx", ".js", ".json"},
+		Loader:            map[string]api.Loader{".ts": api.LoaderTS, ".ct": api.LoaderTS},
+		Plugins:           []api.Plugin{t.urlResolverPlugin()},
+	})
+	if res.Metafile == "" {
+		return nil
+	}
+	var meta struct {
+		Outputs map[string]struct {
+			Exports []string `json:"exports"`
+		} `json:"outputs"`
+	}
+	if err := json.Unmarshal([]byte(res.Metafile), &meta); err != nil {
+		return nil
+	}
+	var names []string
+	for _, out := range meta.Outputs {
+		names = append(names, out.Exports...)
+	}
+	slices.Sort(names)
+	return slices.Compact(names)
+}
+
+// closestName returns the candidate nearest to name, or "" when nothing is
+// close enough to be a likely typo.
+func closestName(name string, candidates []string) string {
+	best, bestDist := "", 1<<30
+	lower := strings.ToLower(name)
+	for _, c := range candidates {
+		dist := levenshtein(lower, strings.ToLower(c))
+		if dist < bestDist {
+			best, bestDist = c, dist
+		}
+	}
+	limit := max(len(name)/3, 2)
+	if bestDist > limit {
+		return ""
+	}
+	return best
+}
+
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		cur := make([]int, len(rb)+1)
+		cur[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(rb)]
 }

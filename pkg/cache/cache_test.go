@@ -254,3 +254,33 @@ func TestCacheKey_BranchWithSlashIsOneDirectory(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join("github.com", "o", "r@feature%2Fnew-ui"), ref.CacheKey())
 }
+
+func TestCloneFailureReason_OneLine(t *testing.T) {
+	ref := &cache.PackageRef{Host: "github.com", Owner: "acme", Repo: "lib", Version: "v9"}
+	dir := "/home/u/.ct/cache/github.com/acme/.download-123"
+	cases := map[string]struct {
+		out  string
+		want string
+	}{
+		"version": {"Cloning into '" + dir + "'...\nwarning: Could not find remote branch v9 to clone.\nfatal: Remote branch v9 not found in upstream origin\n", `version "v9" not found`},
+		"repo":    {"Cloning into '" + dir + "'...\nremote: Repository not found.\nfatal: repository 'https://github.com/acme/lib.git/' not found\n", "repository not found"},
+		"access":  {"Cloning into '" + dir + "'...\nfatal: could not read Username for 'https://github.com': terminal prompts disabled\n", "not found or access denied"},
+		"other":   {"Cloning into '" + dir + "'...\nfatal: unable to access '" + dir + "': weird\n", "unable to access 'the cache': weird"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := cache.CloneFailureReason(ref, dir, tc.out, errors.New("exit status 128"))
+			assert.Contains(t, got, tc.want)
+			assert.NotContains(t, got, "\n")
+			assert.NotContains(t, got, ".download-")
+		})
+	}
+}
+
+func TestResolve_ErrorNamesPackage(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stubClone(t, func(ref *cache.PackageRef, dir string) error { return errors.New("repository not found") })
+
+	_, err := cache.Resolve("https://github.com/acme/lib@v1")
+	require.EqualError(t, err, "cannot download package github.com/acme/lib@v1: repository not found")
+}
