@@ -27,10 +27,11 @@ func newTypesCmd() *cobra.Command {
 	var opts typesOpts
 
 	cmd := &cobra.Command{
-		Use:   "types [dir]",
-		Short: "Generate TypeScript type definitions for a ct project",
-		Long:  "Generates globals.d.ts and values.d.ts for IDE support. Outputs the directory path containing the generated files.",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "types [dir]",
+		Short:   "Generate TypeScript type definitions for a ct project",
+		Long:    "Generates globals.d.ts and values.d.ts for IDE support. Outputs the directory path containing the generated files.",
+		Example: "ct types .",
+		Args:    usageArgs(cobra.MaximumNArgs(1)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dir := "."
 			if len(args) > 0 {

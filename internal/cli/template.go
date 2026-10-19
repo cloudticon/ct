@@ -35,10 +35,11 @@ func newTemplateCmd() *cobra.Command {
 	var opts templateOpts
 
 	cmd := &cobra.Command{
-		Use:   "template <name> <dir|repo>",
-		Short: "Render Kubernetes manifests from a ct project",
-		Long:  "Bundles and executes main.ct from the given source, injects ct release labels, and prints Kubernetes manifests to stdout.",
-		Args:  cobra.ExactArgs(2),
+		Use:     "template <name> <dir|repo>",
+		Short:   "Render Kubernetes manifests from a ct project",
+		Long:    "Bundles and executes main.ct from the given source, injects ct release labels, and prints Kubernetes manifests to stdout.",
+		Example: "ct template my-app . -n production",
+		Args:    usageArgs(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTemplate(cmd, args[0], args[1], opts)
 		},

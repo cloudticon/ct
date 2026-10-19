@@ -29,10 +29,11 @@ func newApplyCmd() *cobra.Command {
 	var opts applyOpts
 
 	cmd := &cobra.Command{
-		Use:   "apply <name> <dir|repo>",
-		Short: "Render and apply Kubernetes manifests to a cluster",
-		Long:  "Bundles and executes main.ct from the given directory, then applies the resulting manifests via server-side apply. Injects release labels, tracks inventory, and prunes orphaned resources.",
-		Args:  cobra.ExactArgs(2),
+		Use:     "apply <name> <dir|repo>",
+		Short:   "Render and apply Kubernetes manifests to a cluster",
+		Long:    "Bundles and executes main.ct from the given directory, then applies the resulting manifests via server-side apply. Injects release labels, tracks inventory, and prunes orphaned resources.",
+		Example: "ct apply my-app . -n production",
+		Args:    usageArgs(cobra.ExactArgs(2)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runApply(cmd, args[0], args[1], opts)
 		},
@@ -72,15 +73,15 @@ func runApply(cmd *cobra.Command, releaseName, source string, opts applyOpts) er
 
 	cluster, err := newClusterFn(opts.context, opts.namespace)
 	if err != nil {
-		return fmt.Errorf("creating k8s client: %w", err)
+		return clusterError(fmt.Errorf("creating k8s client: %w", err))
 	}
 
 	if err := ensureApplyNamespace(cmd.Context(), cluster, opts.namespace, opts.createNamespace); err != nil {
-		return err
+		return clusterError(err)
 	}
 
 	if err := cluster.ApplyRelease(cmd.Context(), opts.namespace, releaseName, resources); err != nil {
-		return applyError(err, where)
+		return clusterError(applyError(err, where))
 	}
 
 	if opts.outputFmt != "" {

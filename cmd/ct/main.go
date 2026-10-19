@@ -11,6 +11,6 @@ func main() {
 	log.SetFlags(0)
 	if err := cli.Execute(); err != nil {
 		cli.PrintError(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(cli.ExitCode(err))
 	}
 }

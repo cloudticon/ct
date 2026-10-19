@@ -25,9 +25,10 @@ func newDevCmd() *cobra.Command {
 	var opts devOpts
 
 	cmd := &cobra.Command{
-		Use:   "dev",
-		Short: "Start development mode from dev.ct configuration",
-		Args:  cobra.NoArgs,
+		Use:     "dev",
+		Short:   "Start development mode from dev.ct configuration",
+		Example: "ct dev --context staging",
+		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDev(cmd, opts)
 		},
@@ -67,7 +68,7 @@ func runDev(cmd *cobra.Command, opts devOpts) error {
 		Stdout:          cmd.OutOrStdout(),
 		Stderr:          cmd.ErrOrStderr(),
 	}); err != nil {
-		return fmt.Errorf("running dev mode: %w", err)
+		return clusterError(fmt.Errorf("running dev mode: %w", err))
 	}
 
 	return nil

@@ -25,10 +25,11 @@ func newListCmd() *cobra.Command {
 	var opts listOpts
 
 	cmd := &cobra.Command{
-		Use:   "list [flags]",
-		Short: "List releases tracked by ct inventory",
-		Long:  "Lists release inventory ConfigMaps managed by ct and shows release name, namespace, and tracked resources count.",
-		Args:  cobra.NoArgs,
+		Use:     "list [flags]",
+		Short:   "List releases tracked by ct inventory",
+		Long:    "Lists release inventory ConfigMaps managed by ct and shows release name, namespace, and tracked resources count.",
+		Example: "ct list -A",
+		Args:    usageArgs(cobra.NoArgs),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runList(cmd, opts)
 		},
@@ -49,12 +50,12 @@ func init() {
 func runList(cmd *cobra.Command, opts listOpts) error {
 	cluster, err := newClusterFn(opts.context, opts.namespace)
 	if err != nil {
-		return fmt.Errorf("creating k8s client: %w", err)
+		return clusterError(fmt.Errorf("creating k8s client: %w", err))
 	}
 
 	releases, err := cluster.ListReleases(cmd.Context(), opts.namespace, opts.allNamespaces)
 	if err != nil {
-		return fmt.Errorf("listing releases: %w", err)
+		return clusterError(fmt.Errorf("listing releases: %w", err))
 	}
 
 	switch strings.ToLower(opts.outputFmt) {
@@ -65,7 +66,7 @@ func runList(cmd *cobra.Command, opts listOpts) error {
 	case "yaml":
 		return writeReleaseYAML(cmd.OutOrStdout(), releases)
 	default:
-		return fmt.Errorf("unsupported output format: %s", opts.outputFmt)
+		return usageError(cmd, fmt.Errorf("unsupported output format: %s", opts.outputFmt))
 	}
 }
 

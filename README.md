@@ -347,6 +347,19 @@ The diagnostic points at the first stack frame outside imported packages, that i
 }
 ```
 
+## Exit codes
+
+The exit code tells you what to fix:
+
+| Code | Meaning | What to do |
+|------|---------|------------|
+| 0 | Success | - |
+| 1 | Error in `.ct` code, values or manifests (render and validation) | Fix the code; the diagnostic has `file:line` |
+| 2 | Wrong use of `ct` (arguments, flags, unknown command) | Fix the call; the error shows the usage line and an example |
+| 3 | Cluster error (connection, authorization, request rejected by apply, delete, list, dev) | Check the cluster, kubeconfig and `--context` |
+
+`--error-format json` keeps the same codes. Releases before `v0.1.0-beta.2` exited with 1 for every error; scripts that test for exactly 1 must accept 2 and 3 too.
+
 ## Releases: apply, list, delete
 
 ```bash
