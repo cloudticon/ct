@@ -57,7 +57,16 @@ func TestTemplateCmd_ExplicitValuesOverride(t *testing.T) {
 	require.NoError(t, os.WriteFile(custom, []byte(`{"image":"custom:1.0","replicas":1}`), 0644))
 
 	files := resolveValuesFiles(dir, []string{custom})
-	assert.Equal(t, []string{custom}, files)
+	assert.Equal(t, []string{filepath.Join(dir, "values.json"), custom}, files)
+}
+
+func TestTemplateCmd_BaseFileNotLoadedTwice(t *testing.T) {
+	dir := setupProject(t)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "values-prod.json"), []byte(`{}`), 0644))
+
+	withBase := resolveValuesFiles(dir, []string{"values.json", filepath.Join(dir, "values-prod.json")})
+	without := resolveValuesFiles(dir, []string{filepath.Join(dir, "values-prod.json")})
+	assert.Equal(t, without, withBase)
 }
 
 func TestTemplateCmd_ExplicitValuesFallBackToProjectDir(t *testing.T) {
@@ -66,7 +75,7 @@ func TestTemplateCmd_ExplicitValuesFallBackToProjectDir(t *testing.T) {
 	t.Chdir(t.TempDir())
 
 	files := resolveValuesFiles(dir, []string{"values-prod.json", "missing.json"})
-	assert.Equal(t, []string{filepath.Join(dir, "values-prod.json"), "missing.json"}, files)
+	assert.Equal(t, []string{filepath.Join(dir, "values.json"), filepath.Join(dir, "values-prod.json"), "missing.json"}, files)
 }
 
 func TestTemplateCmd_NoValuesFile(t *testing.T) {

@@ -252,8 +252,9 @@ if (Values.redis?.enabled) {
 
 ## Values
 
-- Without `-f`, `ct` uses the first of `values.json`, `values.yaml`, `values.yml` in the project.
-- `-f` is repeatable. Files deep-merge left to right: objects merge key by key, everything else (including arrays) is replaced, like Helm. A single `-f` replaces the auto-detected file. A relative `-f` that isn't in the working directory is looked up in the project, so remote sources can use their own `values-prod.yaml`.
+- **Layers, lowest first:** the project's values file (the first of `values.json`, `values.yaml`, `values.yml`) is always the base; each `-f` file is merged on top in the order given; `--set` and `--set-string` come last. A base file that is also passed with `-f` is not loaded twice.
+- **Breaking change (beta.2):** a single `-f` used to replace the project's values file; now it only overrides it. Put just the overrides in `-f` files. There is no flag to drop the base.
+- `-f` is repeatable. Files deep-merge left to right: objects merge key by key, everything else (including arrays) is replaced, like Helm. A relative `-f` that isn't in the working directory is looked up in the project, so remote sources can use their own `values-prod.yaml`.
 - `--set key.nested=value` overrides one value. `true`/`false`/`null` and numbers are typed, but only when the number round-trips: `1.10`, `1.0` and `0123` stay strings. `--set-string` always sets a string. Escape dots in keys with a backslash: `--set 'annotations.nginx\.ingress\.kubernetes\.io/rewrite-target=/'`.
 
 ```bash
@@ -361,7 +362,7 @@ ct init [dir] [flags]
 ct template <name> <dir|repo> [flags]
   -n, --namespace string      default namespace for resources
   -o, --output string         output format: yaml or json (default "yaml")
-  -f, --values stringArray    values file; repeat to deep-merge left to right
+  -f, --values stringArray    overrides layered on the project values file; repeat to deep-merge left to right
       --set stringArray       override a value (typed)
       --set-string stringArray  override a value as a string
       --validate              check objects against the Kubernetes API (default true)

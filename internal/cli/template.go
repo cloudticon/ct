@@ -163,27 +163,46 @@ func validateReleaseName(name string) error {
 // instead of hanging the CLI.
 var renderTimeout = time.Minute
 
-// resolveValuesFiles returns the values files for a render. Explicit files
-// are used as given, falling back to the project directory, so
-// `-f values-prod.yaml` works for remote sources too. Without explicit files
-// the first of values.json, values.yaml, values.yml in dir is used.
+// resolveValuesFiles returns the values files for a render, lowest layer
+// first. The project's values.json, values.yaml or values.yml (the first one
+// found in dir) is always the base layer; explicit -f files are layered on top
+// in the given order, like a chart's values.yaml in Helm. Explicit files fall
+// back to the project directory, so `-f values-prod.yaml` works for remote
+// sources too. A base file that is also passed with -f is not loaded twice.
 func resolveValuesFiles(dir string, explicit []string) []string {
-	if len(explicit) > 0 {
-		files := make([]string, len(explicit))
-		for i, f := range explicit {
-			files[i] = f
-			if _, err := os.Stat(f); err != nil && !filepath.IsAbs(f) {
-				if inProject := filepath.Join(dir, f); fileExists(inProject) {
-					files[i] = inProject
-				}
+	var files []string
+	base := detectValuesFile(dir)
+	if base != "" {
+		files = append(files, base)
+	}
+	for _, f := range explicit {
+		path := f
+		if _, err := os.Stat(f); err != nil && !filepath.IsAbs(f) {
+			if inProject := filepath.Join(dir, f); fileExists(inProject) {
+				path = inProject
 			}
 		}
-		return files
+		if base != "" && sameFile(base, path) {
+			continue
+		}
+		files = append(files, path)
 	}
-	if path := detectValuesFile(dir); path != "" {
-		return []string{path}
+	return files
+}
+
+func sameFile(a, b string) bool {
+	if a == b {
+		return true
 	}
-	return nil
+	ia, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	ib, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ia, ib)
 }
 
 func detectValuesFile(dir string) string {
